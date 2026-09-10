@@ -106,3 +106,5 @@ MobileBackups.trash
 tmbootpicker.efi
 .idea/
 .env
+
+inventory/hosts.ini

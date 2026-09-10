@@ -1,0 +1,9 @@
+---
+- name: Instalar y configurar Veyon
+  hosts: alumnos
+  remote_user: ciber
+  vars:
+    ansible_python_interpreter: auto_silent
+  gather_facts: true
+  roles:
+    - { role: actualizar, become: true }
