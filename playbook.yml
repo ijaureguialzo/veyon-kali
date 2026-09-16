@@ -21,6 +21,7 @@
   roles:
     - { role: instalar-veyon, become: true }
     - { role: generar-claves, become: true }
+    - { role: configurar-profesor, become: true }
 
 - name: Instalar Veyon en los ordenadores de los alumnos
   hosts: alumnos

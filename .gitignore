@@ -114,3 +114,5 @@ keys/
 package/
 
 vars/main.yml
+
+roles/configurar-profesor/files/ordenadores.csv

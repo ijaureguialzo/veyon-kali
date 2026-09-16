@@ -1,0 +1,14 @@
+---
+- name: Configurar el método de autenticación por claves
+  ansible.builtin.shell: |
+    veyon-cli config set Authentication/Method 1
+
+- name: Copiar el fichero la clave pública al equipo
+  ansible.builtin.copy:
+    src: files/ordenadores.csv
+    dest: /tmp/ordenadores.csv
+
+- name: Crear el aula y los ordenadores
+  ansible.builtin.shell: |
+    veyon-cli networkobjects clear
+    veyon-cli networkobjects import /tmp/ordenadores.csv location "Aula 131" format "%name%;%host%"
