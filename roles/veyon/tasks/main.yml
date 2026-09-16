@@ -1,0 +1,9 @@
+---
+- name: Copiar el paquete
+  ansible.builtin.copy:
+    src: "package/{{ version_paquete }}"
+    dest: /tmp/veyon.deb
+
+- name: Instalar el paquete
+  ansible.builtin.apt:
+    deb: /tmp/veyon.deb

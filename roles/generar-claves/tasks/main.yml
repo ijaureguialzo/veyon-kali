@@ -1,0 +1,41 @@
+---
+- name: Borrar las claves antiguas
+  ansible.builtin.shell: |
+    veyon-cli authkeys delete aula-131/private
+    veyon-cli authkeys delete aula-131/public
+  when: recrear_claves == true
+
+- name: Comprobar si ya existe la clave privada
+  become: false
+  ansible.builtin.stat:
+    path: "/etc/veyon/keys/private/aula-131/key"
+  register: veyon_private_key_file
+
+- name: Crear el par de claves
+  ansible.builtin.shell: veyon-cli authkeys create aula-131
+  when: recrear_claves == true or veyon_private_key_file.stat.exists == false
+
+- name: Comprobar si ya existe la clave privada
+  become: false
+  ansible.builtin.stat:
+    path: "/etc/veyon/keys/private/aula-131/key"
+  register: veyon_private_key_file
+
+- name: Comprobar si ya existe la clave pública
+  become: false
+  ansible.builtin.stat:
+    path: "/etc/veyon/keys/public/aula-131/key"
+  register: veyon_public_key_file
+
+- name: Descargar la clave pública al equipo local
+  ansible.builtin.fetch:
+    src: /etc/veyon/keys/public/aula-131/key
+    dest: keys/aula-131/public/key
+    flat: yes
+  when: veyon_public_key_file.stat.exists == true
+
+- name: Configurar el acceso a las claves al usuario ciber
+  ansible.builtin.shell: |
+    veyon-cli authkeys setaccessgroup aula-131/private ciber
+    veyon-cli authkeys setaccessgroup aula-131/public ciber
+  when: veyon_private_key_file.stat.exists == true and veyon_public_key_file.stat.exists == true

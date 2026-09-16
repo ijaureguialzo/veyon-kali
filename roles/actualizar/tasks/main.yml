@@ -14,7 +14,7 @@
 
 - name: Reiniciar el servidor si es necesario
   ansible.builtin.reboot:
-  when: reboot_required_file.stat.exists == true
+  when: reiniciar_equipos == true and reboot_required_file.stat.exists == true
 
 - name: Eliminar dependencias obsoletas
   ansible.builtin.apt:

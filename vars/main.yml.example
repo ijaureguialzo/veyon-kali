@@ -1,0 +1,5 @@
+---
+actualizar_paquetes: false
+version_paquete: veyon_4.11.2.10_amd64.deb
+reiniciar_equipos: false
+recrear_claves: false

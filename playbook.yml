@@ -1,9 +1,35 @@
 ---
-- name: Instalar y configurar Veyon
+- name: Actualizar el sistema
+  hosts: all
+  remote_user: ciber
+  vars:
+    ansible_python_interpreter: auto_silent
+  vars_files:
+    - main.yml
+  gather_facts: true
+  roles:
+    - { role: actualizar, when: actualizar_paquetes, become: true }
+
+- name: Instalar Veyon en el ordenador del profesor
+  hosts: profesor
+  remote_user: ciber
+  vars:
+    ansible_python_interpreter: auto_silent
+  vars_files:
+    - main.yml
+  gather_facts: true
+  roles:
+    - { role: veyon, become: true }
+    - { role: generar-claves, become: true }
+
+- name: Instalar Veyon en los ordenadores de los alumnos
   hosts: alumnos
   remote_user: ciber
   vars:
     ansible_python_interpreter: auto_silent
+  vars_files:
+    - main.yml
   gather_facts: true
   roles:
-    - { role: actualizar, become: true }
+    - { role: veyon, become: true }
+    - { role: copiar-claves, become: true }

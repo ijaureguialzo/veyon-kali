@@ -108,3 +108,9 @@ tmbootpicker.efi
 .env
 
 inventory/hosts.ini
+
+keys/
+
+package/
+
+vars/main.yml
