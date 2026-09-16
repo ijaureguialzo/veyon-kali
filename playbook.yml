@@ -19,7 +19,7 @@
     - main.yml
   gather_facts: true
   roles:
-    - { role: veyon, become: true }
+    - { role: instalar-veyon, become: true }
     - { role: generar-claves, become: true }
 
 - name: Instalar Veyon en los ordenadores de los alumnos
@@ -31,5 +31,5 @@
     - main.yml
   gather_facts: true
   roles:
-    - { role: veyon, become: true }
+    - { role: instalar-veyon, become: true }
     - { role: copiar-claves, become: true }
