@@ -3,6 +3,7 @@
   ansible.builtin.shell: |
     veyon-cli authkeys delete aula-131/public
   when: recrear_claves == true
+  ignore_errors: true
 
 - name: Comprobar si ya existe la clave pública
   become: false

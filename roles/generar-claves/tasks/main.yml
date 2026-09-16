@@ -4,6 +4,7 @@
     veyon-cli authkeys delete aula-131/private
     veyon-cli authkeys delete aula-131/public
   when: recrear_claves == true
+  ignore_errors: true
 
 - name: Comprobar si ya existe la clave privada
   become: false
