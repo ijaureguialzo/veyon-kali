@@ -116,3 +116,7 @@ package/
 vars/main.yml
 
 roles/configurar-profesor/files/ordenadores.csv
+
+inventory/
+
+roles/configurar-profesor/files/
