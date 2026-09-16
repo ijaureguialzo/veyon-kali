@@ -1,0 +1,10 @@
+---
+- name: Configurar el método de autenticación por claves
+  ansible.builtin.shell: |
+    veyon-cli config set Authentication/Method 1
+
+- name: Activar el servicio
+  ansible.builtin.shell: |
+    veyon-cli config set Service/HideTrayIcon true
+    veyon-cli config set Service/Autostart true
+    veyon-cli service start

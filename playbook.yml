@@ -33,3 +33,4 @@
   roles:
     - { role: instalar-veyon, become: true }
     - { role: copiar-claves, become: true }
+    - { role: configurar-alumno, become: true }
