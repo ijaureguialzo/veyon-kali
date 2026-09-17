@@ -7,3 +7,4 @@
 - name: Instalar el paquete
   ansible.builtin.apt:
     deb: /tmp/veyon.deb
+    force: true
