@@ -13,11 +13,12 @@ sudo systemctl enable ssh.service
 
 ### 2. Configurar el inventario
 
-Copia el ejemplo y rellena las direcciones de los hosts del aula
-(grupo `alumnos`):
+Copiar los archivos de ejemplo y rellenar los datos en cada uno de ellos:
 
 ```shell
 cp inventory/hosts.ini.example inventory/hosts.ini
+cp roles/configurar-profesor/files/ordenadores.csv.example roles/configurar-profesor/files/ordenadores.csv
+cp vars/main.yml.example vars/main.yml
 ```
 
 ### 3. Copiar la clave SSH a todos los hosts
@@ -48,3 +49,5 @@ make setup-ssh SSH_USER=ciber SSH_KEY=~/.ssh/id_ed25519.pub
 ```shell
 make apply
 ```
+
+> Pedirá la contraseña del usuario para poder elevar privilegios y hacer la instalación.
