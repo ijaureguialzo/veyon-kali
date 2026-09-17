@@ -42,6 +42,7 @@ help: _header
 	@echo -------------------
 	@echo setup-ssh
 	@echo -------------------
+	@echo download-src
 	@echo arm64 / amd64 / all
 	@echo -------------------
 	@echo apply
@@ -83,3 +84,7 @@ amd64:
 		-v $(OUT):/out \
 		$(IMAGE) \
 		$(SCRIPT)
+
+download-src:
+	@if [ ! -d build/veyon ]; then git clone --recursive https://github.com/veyon/veyon.g build/veyon; fi
+	@cd build/veyon && git pull --recurse-submodules
