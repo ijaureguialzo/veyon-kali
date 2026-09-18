@@ -7,4 +7,6 @@
   ansible.builtin.shell: |
     veyon-cli config set Service/HideTrayIcon true
     veyon-cli config set Service/Autostart true
+    veyon-cli config set Service/FailedAuthenticationNotifications false
+    veyon-cli config set Service/RemoteConnectionNotifications false
     veyon-cli service start
