@@ -1,4 +1,10 @@
 ---
+- name: Modificar el repositorio de Kali para que use https
+  ansible.builtin.lineinfile:
+    path: "/etc/apt/sources.list"
+    regexp: "^deb http://http.kali.org"
+    line: "deb https://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware"
+
 - name: Actualizar el índice de paquetes
   ansible.builtin.apt:
     update_cache: true
