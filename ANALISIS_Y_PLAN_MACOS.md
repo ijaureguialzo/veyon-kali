@@ -866,25 +866,107 @@ El mismo escaneo con `otool -L` sobre todos los binarios del bundle
 (devuelve 0 referencias) y la ejecución desde el DMG montado confirman que
 no queda ninguna dependencia externa.
 
-### 8.8 Limitaciones conocidas
+### 8.8 Captura nativa con ScreenCaptureKit
+
+El backend de captura nativa se implementa como un plugin VNC independiente
+en `plugins/vncserver/screencapturekit/`, separado del plugin de plataforma.
+De esta forma se puede sustituir el backend de captura sin acoplarlo al
+resto del plugin de plataforma macOS.
+
+| Fichero | Contenido |
+| --- | --- |
+| `ScreenCaptureKitCapturer.{h,mm}` | Propiedad de `SCStream` y conversión de frames |
+| `ScreenCaptureKitVncServer.{h,cpp}` | Plugin VNC que alimenta el framebuffer libVNC |
+| `ScreenCaptureKitConfiguration.h` | Ajustes del plugin (FPS, display, tamaño máximo) |
+| `ScreenCaptureKitVncServerConfigurationWidget.{h,cpp,ui}` | Widget de configuración |
+
+Decisiones de diseño:
+
+- **Objective-C++ sin PCH ni *unity build***: los ficheros `.mm` se aíslan del
+  resto para que las cabeceras de Qt y los frameworks de Apple no se
+  procesen de forma conjunta.
+- **MRC, no ARC**: el proyecto no compila con ARC, por lo que todos los
+  objetos Objective-C, *dispatch queues* y *dispatch semaphores* se liberan
+  explícitamente en todos los caminos de error.
+- **Framebuffer `QImage::Format_RGB32`**: el formato BGRA de ScreenCaptureKit
+  coincide con el *endianness* little-endian y con los *shifts* RGB que
+  espera libVNC.
+- **`kCVPixelFormatType_32BGRA`**: `SCStreamConfiguration.pixelFormat` es un
+  `OSType` (*FourCC*), no admite un `CVPixelFormatRef` creado a mano.
+- **Sin *precompiled headers* en `ScreenCaptureKitCapturer.mm`**: los
+  *headers* de Objective-C++ se procesan de forma aislada.
+
+#### Selección del backend y *fallback*
+
+`SCShareableContent` solo expone los monitores **activos**. En un equipo sin
+pantalla encendida, en una sesión remota o en modo *headless* la lista de
+`SCDisplay` está vacía y la captura no puede establecerse.
+
+Para que el servidor VNC siga funcionando en esos casos, se añadió el flag
+`Plugin::PreferredDefaultImplementation`:
+
+- `ScreenCaptureKitVncServer` se marca como implementación **preferida**: es
+  la que se usa en macOS siempre que pueda arrancar.
+- `HeadlessVncServer` conserva `ProvidesDefaultImplementation` y actúa de
+  *fallback* portátil.
+- `VncServer` conserva la lista de implementaciones por defecto restantes y
+  las prueba cuando la preferida falla.
+
+Comportamiento observado en un equipo con las pantallas en reposo:
+
+```text
+[ERR] ScreenCaptureKitCapturer: "No active display could be captured. ..."
+[ERR] VncServer: An error occurred while running the VNC server plugin
+[DEBUG] HeadlessVncServer::rfbLogDebug(): Listening for VNC connections on TCP port 11200
+```
+
+Los tres puertos (11100, 11200 y 11300) quedan escuchar y el protocolo
+responde correctamente:
+
+```text
+$ printf '\x00' | nc -w 3 127.0.0.1 11100 | head -c 12
+RFB 003.008
+```
+
+#### Limitación: la captura de todos los monitores
+
+`SCContentFilter` captura **un** `SCDisplay` por *stream*. La opción
+"capturar todos los monitores" usa hoy el primer `SCDisplay` disponible,
+mientras que las dimensiones se calculan como la suma de las anchuras y la
+altura máxima de todos ellos. La imagen resultante no corresponde con el
+filtro aplicado.
+
+Las opciones pendientes son:
+
+1. Crear un `SCStream` por monitor y componer los *frames* en un framebuffer
+   virtual (con el *cursor* de cada uno), o bien
+2. Cambiar la semántica de la opción a "monitor principal" y Renombrar el
+   ajuste en consecuencia.
+
+### 8.9 Limitaciones conocidas
 
 1. **TCC**: Screen Recording y Accessibility hay que concederlos manualmente.
 2. **Sin firma ni notarización**: el bundle se firma *ad hoc*, lo que permite
    ejecutarlo localmente pero no distriburlo. Gatekeeper bloqueará la
    instalación en otros equipos hasta que se firme con Developer ID y se
    notarice.
-3. **El plugin no implementa la captura de pantalla nativa**: la función
-   `takeScreenshot` no está disponible; hay que usar `external-vnc-server`.
-4. **`hdiutil` está obsoleto**: `scripts/package-veyon-macos.sh` genera
+3. **ScreenCaptureKit requiere un display activo**: en máquinas *headless* o
+   con las pantallas en reposo el backend nativo no puede arrancar y se usa
+   el *fallback* *headless*.
+4. **"Todos los monitores" no está implementado**: el filtro y las
+   dimensiones no son coherentes entre sí (ver 8.8).
+5. **`hdiutil` está obsoleto**: `scripts/package-veyon-macos.sh` genera
    avisos de deprecación; el resultado es válido, pero debería migrarse a
    `diskutil`.
 
-### 8.9 Siguientes pasos pendientes
+### 8.10 Siguientes pasos pendientes
 
 1. Firmar y notarizar el bundle (`codesign`, `notarytool`).
-2. Implementar la captura nativa con ScreenCaptureKit (macOS 13+).
+2. Resolver la captura multi-monitor de ScreenCaptureKit (ver 8.8).
 3. Completar los *stubs*: ping, firewall, velocidad de red, CFPreferences,
    logon/logoff.
 4. Validar `veyon-service` como servicio launchd en un sistema real.
 5. Crear el rol de Ansible `roles/instalar-veyon-macos` para el despliegue.
 6. Migrar `scripts/package-veyon-macos.sh` de `hdiutil` a `diskutil`.
+7. Validar la captura real en un equipo con la pantalla encendida y el
+   permiso de Screen Recording concedido a `Veyon.app`.
