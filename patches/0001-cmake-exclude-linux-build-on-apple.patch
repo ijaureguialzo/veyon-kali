@@ -1,0 +1,13 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 3b0234aaf..2e2017d72 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -109,7 +109,7 @@ endif()
+ if(APPLE)
+ 	set(VEYON_BUILD_APPLE 1)
+ endif()
+-if(UNIX AND NOT ANDROID)
++if(UNIX AND NOT ANDROID AND NOT APPLE)
+ 	set(VEYON_BUILD_LINUX 1)
+ endif()
+ if(ANDROID)

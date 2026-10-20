@@ -1,0 +1,15 @@
+diff --git a/cmake/modules/SetDefaultTargetProperties.cmake b/cmake/modules/SetDefaultTargetProperties.cmake
+index d877646..d0ab958 100644
+--- a/cmake/modules/SetDefaultTargetProperties.cmake
++++ b/cmake/modules/SetDefaultTargetProperties.cmake
+@@ -12,6 +12,10 @@ macro(set_default_target_properties TARGET_NAME)
+ 		-DQT_NO_NARROWING_CONVERSIONS_IN_CONNECT
+ 		-DQT_USE_QSTRINGBUILDER
+ 		-DQT_STRICT_ITERATORS
++		# Since Qt 6.10 QFile::open() is marked [[nodiscard]].  Veyon
++		# intentionally ignores the return value in a few places, and the
++		# project is built with -Werror, so the warning would abort the build.
++		-DQT_NO_USE_NODISCARD_FILE_OPEN
+ 	)
+ 	target_compile_options(${TARGET_NAME} PRIVATE "-Wall;-Werror")
+ 	if(WITH_LTO)

@@ -1,0 +1,63 @@
+diff --git a/core/src/PluginManager.cpp b/core/src/PluginManager.cpp
+index c3f45bbbc..796c44aed 100644
+--- a/core/src/PluginManager.cpp
++++ b/core/src/PluginManager.cpp
+@@ -62,14 +62,14 @@ PluginManager::~PluginManager()
+ 
+ void PluginManager::loadPlatformPlugins()
+ {
+-	loadPlugins( QStringLiteral("*-platform") + VeyonCore::sharedLibrarySuffix() );
++	loadPlugins( QStringLiteral("*-platform") + VeyonCore::moduleLibrarySuffix() );
+ }
+ 
+ 
+ 
+ void PluginManager::loadPlugins()
+ {
+-	loadPlugins( QStringLiteral("*") + VeyonCore::sharedLibrarySuffix() );
++	loadPlugins( QStringLiteral("*") + VeyonCore::moduleLibrarySuffix() );
+ }
+ 
+ 
+diff --git a/core/src/VeyonCore.cpp b/core/src/VeyonCore.cpp
+index 60b7028b2..4530e8155 100644
+--- a/core/src/VeyonCore.cpp
++++ b/core/src/VeyonCore.cpp
+@@ -206,6 +206,13 @@ QString VeyonCore::sharedLibrarySuffix()
+ 
+ 
+ 
++QString VeyonCore::moduleLibrarySuffix()
++{
++	return QStringLiteral( VEYON_MODULE_LIBRARY_SUFFIX );
++}
++
++
++
+ QString VeyonCore::applicationsDirectory()
+ {
+ 	return QStringLiteral(CMAKE_INSTALL_PREFIX "/share/applications");
+diff --git a/core/src/VeyonCore.h b/core/src/VeyonCore.h
+index 8f3fc34dc..1c4cec20c 100644
+--- a/core/src/VeyonCore.h
++++ b/core/src/VeyonCore.h
+@@ -113,6 +113,7 @@ public:
+ 	static QString qtTranslationsDirectory();
+ 	static QString executableSuffix();
+ 	static QString sharedLibrarySuffix();
++	static QString moduleLibrarySuffix();
+ 	static QString applicationsDirectory();
+ 
+ 	static QString sessionIdEnvironmentVariable();
+diff --git a/core/src/veyonconfig.h.in b/core/src/veyonconfig.h.in
+index 9ac5244d6..3ec7b799c 100644
+--- a/core/src/veyonconfig.h.in
++++ b/core/src/veyonconfig.h.in
+@@ -7,6 +7,7 @@
+ #define VEYON_TRANSLATIONS_DIR "@VEYON_TRANSLATIONS_DIR@"
+ #define VEYON_EXECUTABLE_SUFFIX "@CMAKE_EXECUTABLE_SUFFIX@"
+ #define VEYON_SHARED_LIBRARY_SUFFIX "@CMAKE_SHARED_LIBRARY_SUFFIX@"
++#define VEYON_MODULE_LIBRARY_SUFFIX "@CMAKE_SHARED_MODULE_SUFFIX@"
+ #define CMAKE_BINARY_DIR "@CMAKE_BINARY_DIR@"
+ #define CMAKE_INSTALL_PREFIX "@CMAKE_INSTALL_PREFIX@"
+ #cmakedefine VEYON_WITH_TESTS "@WITH_TESTS@"

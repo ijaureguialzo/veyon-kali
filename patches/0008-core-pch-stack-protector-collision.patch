@@ -1,0 +1,36 @@
+diff --git a/core/CMakeLists.txt b/core/CMakeLists.txt
+index 9ce24c056..da6218973 100644
+--- a/core/CMakeLists.txt
++++ b/core/CMakeLists.txt
+@@ -79,8 +79,12 @@ if(WITH_PCH)
+ 	target_precompile_headers(veyon-core PRIVATE ${PCH})
+ 
+ 	add_pch_target(veyon-application-pch ${PCH})
+-	set_target_properties(veyon-application-pch PROPERTIES COMPILE_OPTIONS "${CMAKE_COMPILE_OPTIONS_PIE}")
+-	set_target_properties(veyon-application-pch PROPERTIES LINK_OPTIONS "${CMAKE_LINK_OPTIONS_PIE}")
++	# Append the PIE options instead of replacing COMPILE_OPTIONS: the latter
++	# would drop the -fstack-protector-strong flag added by
++	# set_default_target_properties() and make the precompiled header
++	# incompatible with the translation units that reuse it.
++	target_compile_options(veyon-application-pch PRIVATE ${CMAKE_COMPILE_OPTIONS_PIE})
++	target_link_options(veyon-application-pch PRIVATE ${CMAKE_LINK_OPTIONS_PIE})
+ 
+ 	add_pch_target(veyon-library-pch ${PCH})
+ 	set_target_properties(veyon-library-pch PROPERTIES POSITION_INDEPENDENT_CODE TRUE)
+diff --git a/cmake/modules/BuildVeyonApplication.cmake b/cmake/modules/BuildVeyonApplication.cmake
+index 84599e4b9..6d2719779 100644
+--- a/cmake/modules/BuildVeyonApplication.cmake
++++ b/cmake/modules/BuildVeyonApplication.cmake
+@@ -17,8 +17,10 @@ function(build_veyon_application TARGET)
+ 		install(TARGETS ${TARGET} RUNTIME DESTINATION bin)
+ 	endif()
+ 	target_include_directories(${TARGET} PRIVATE ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src)
+-	set_target_properties(${TARGET} PROPERTIES COMPILE_OPTIONS "${CMAKE_COMPILE_OPTIONS_PIE}")
+-	set_target_properties(${TARGET} PROPERTIES LINK_OPTIONS "${CMAKE_LINK_OPTIONS_PIE}")
++	# Append the PIE options instead of replacing COMPILE_OPTIONS/LINK_OPTIONS:
++	# replacing them would drop flags added by set_default_target_properties().
++	target_compile_options(${TARGET} PRIVATE ${CMAKE_COMPILE_OPTIONS_PIE})
++	target_link_options(${TARGET} PRIVATE ${CMAKE_LINK_OPTIONS_PIE})
+ 	target_link_libraries(${TARGET} PRIVATE veyon-core)
+ 	set_default_target_properties(${TARGET})
+ 	if(WITH_PCH)

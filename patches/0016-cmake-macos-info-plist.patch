@@ -1,0 +1,47 @@
+diff --git a/cmake/modules/MacOSInfoPlist.cmake b/cmake/modules/MacOSInfoPlist.cmake
+new file mode 100644
+index 000000000..18c279d38
+--- /dev/null
++++ b/cmake/modules/MacOSInfoPlist.cmake
+@@ -0,0 +1,41 @@
++# MacOSInfoPlist.cmake - Generate the Info.plist of the macOS application bundle.
++
++set(MACOS_BUNDLE_NAME "Veyon")
++set(MACOS_BUNDLE_BUNDLE_ID "io.veyon.veyon")
++set(MACOS_BUNDLE_SHORT_VERSION "${MACOS_BUNDLE_VERSION}")
++set(MACOS_BUNDLE_MIN_SYSTEM_VERSION "${MACOS_BUNDLE_MIN_SYSTEM_VERSION}")
++
++set(plist_content
++"<?xml version=\"1.0\" encoding=\"UTF-8\"?>
++<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
++<plist version=\"1.0\">
++<dict>
++	<key>CFBundleName</key>
++	<string>${MACOS_BUNDLE_NAME}</string>
++	<key>CFBundleDisplayName</key>
++	<string>${MACOS_BUNDLE_NAME}</string>
++	<key>CFBundleIdentifier</key>
++	<string>${MACOS_BUNDLE_BUNDLE_ID}</string>
++	<key>CFBundleVersion</key>
++	<string>${MACOS_BUNDLE_SHORT_VERSION}</string>
++	<key>CFBundleShortVersionString</key>
++	<string>${MACOS_BUNDLE_SHORT_VERSION}</string>
++	<key>CFBundleExecutable</key>
++	<string>veyon-master</string>
++	<key>CFBundleIconFile</key>
++	<string>${MACOS_BUNDLE_NAME}.icns</string>
++	<key>CFBundlePackageType</key>
++	<string>APPL</string>
++	<key>NSHighResolutionCapable</key>
++	<true/>
++	<key>LSMinimumSystemVersion</key>
++	<string>${MACOS_BUNDLE_MIN_SYSTEM_VERSION}</string>
++	<key>NSAppleEventsUsageDescription</key>
++	<string>Veyon needs to send Apple events to control the local user session.</string>
++	<key>NSLocalNetworkUsageDescription</key>
++	<string>Veyon needs access to the local network to connect to remote computers.</string>
++</dict>
++</plist>
++")
++
++file(WRITE "${CMAKE_BINARY_DIR}/${MACOS_BUNDLE_NAME}.app/Contents/Info.plist" "${plist_content}")

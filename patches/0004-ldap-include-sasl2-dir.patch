@@ -1,0 +1,13 @@
+diff --git a/plugins/ldap/kldap/CMakeLists.txt b/plugins/ldap/kldap/CMakeLists.txt
+index 9889b99f2..1f6ad7e64 100644
+--- a/plugins/ldap/kldap/CMakeLists.txt
++++ b/plugins/ldap/kldap/CMakeLists.txt
+@@ -41,7 +41,7 @@ set(kldap_SOURCES
+ add_library(kldap-light SHARED ${kldap_SOURCES})
+ target_link_libraries(kldap-light PRIVATE Qt${QT_MAJOR_VERSION}::Core)
+ target_link_libraries(kldap-light PUBLIC ${Ldap_LIBRARIES} ${Sasl2_LIBRARIES})
+-target_include_directories(kldap-light PRIVATE ${Ldap_INCLUDE_DIRS})
++target_include_directories(kldap-light PRIVATE ${Ldap_INCLUDE_DIRS} ${Sasl2_INCLUDE_DIRS})
+ target_include_directories(kldap-light PUBLIC ${kldap_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+ set_default_target_properties(kldap-light)
+ if(NOT WITH_CORE_ONLY)

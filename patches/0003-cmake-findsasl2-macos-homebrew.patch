@@ -1,0 +1,49 @@
+diff --git a/cmake/modules/FindSasl2.cmake b/cmake/modules/FindSasl2.cmake
+index e36c0c2da..d075011f6 100644
+--- a/cmake/modules/FindSasl2.cmake
++++ b/cmake/modules/FindSasl2.cmake
+@@ -61,14 +61,39 @@
+ find_package(PkgConfig QUIET)
+ pkg_check_modules(PC_Sasl2 libsasl2)
+ 
+-find_path(Sasl2_INCLUDE_DIRS NAMES sasl/sasl.h)
++if(APPLE)
++   # The macOS SDK ships a deprecated copy of cyrus-sasl whose headers mark
++   # the whole API as deprecated since 10.11, which breaks the build because
++   # Veyon compiles with -Werror.  Prefer Homebrew's keg-only cyrus-sasl and
++   # exclude the SDK/system paths so that it does not shadow it.
++   find_path(Sasl2_INCLUDE_DIRS NAMES sasl/sasl.h
++      HINTS ${CYRUS_SASL_ROOT} "$ENV{CYRUS_SASL_ROOT}"
++            /opt/homebrew/opt/cyrus-sasl/include /usr/local/opt/cyrus-sasl/include
++      NO_CMAKE_SYSTEM_PATH
++      NO_CMAKE_ENVIRONMENT_PATH
++      )
++else()
++   find_path(Sasl2_INCLUDE_DIRS NAMES sasl/sasl.h)
++endif()
+ 
+ # libsasl2 add for windows, because the windows package of cyrus-sasl2
+ # contains a libsasl2 also for msvc which is not standard conform
+-find_library(Sasl2_LIBRARIES
+-  NAMES sasl2 libsasl2
+-  HINTS ${PC_Sasl2_LIBRARY_DIRS}
+-)
++if(APPLE)
++   # Exclude the SDK's deprecated copy of cyrus-sasl, see above.
++   find_library(Sasl2_LIBRARIES
++     NAMES sasl2 libsasl2
++     HINTS ${CYRUS_SASL_ROOT} "$ENV{CYRUS_SASL_ROOT}"
++           /opt/homebrew/opt/cyrus-sasl/lib /usr/local/opt/cyrus-sasl/lib
++           ${PC_Sasl2_LIBRARY_DIRS}
++     NO_CMAKE_SYSTEM_PATH
++     NO_CMAKE_ENVIRONMENT_PATH
++   )
++else()
++   find_library(Sasl2_LIBRARIES
++     NAMES sasl2 libsasl2
++     HINTS ${PC_Sasl2_LIBRARY_DIRS}
++   )
++endif()
+ 
+ set(Sasl2_VERSION "${PC_Sasl2_VERSION}")
+ 

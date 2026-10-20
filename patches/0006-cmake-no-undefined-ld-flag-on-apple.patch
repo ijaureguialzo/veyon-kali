@@ -1,0 +1,18 @@
+diff --git a/cmake/modules/SetDefaultTargetProperties.cmake b/cmake/modules/SetDefaultTargetProperties.cmake
+index d877646..4c6906f 100644
+--- a/cmake/modules/SetDefaultTargetProperties.cmake
++++ b/cmake/modules/SetDefaultTargetProperties.cmake
+@@ -27,7 +27,12 @@ macro(set_default_target_properties TARGET_NAME)
+ 		target_compile_options(${TARGET_NAME} PRIVATE "-fsanitize=address")
+ 		target_link_options(${TARGET_NAME} PRIVATE "-fsanitize=address")
+ 	else()
+-		set_target_properties(${TARGET_NAME} PROPERTIES LINK_FLAGS "-Wl,-no-undefined")
++		# The GNU/ld "-no-undefined" option does not exist in Apple's ld64, which
++		# rejects it with "ld: unknown options: -no-undefined".  Apple's linker
++		# reports undefined symbols itself, so the flag is simply not needed.
++		if(NOT APPLE)
++			set_target_properties(${TARGET_NAME} PROPERTIES LINK_FLAGS "-Wl,-no-undefined")
++		endif()
+ 	endif()
+ 	if(WITH_THREAD_SANITIZER)
+ 		target_compile_options(${TARGET_NAME} PRIVATE "-fsanitize=thread")

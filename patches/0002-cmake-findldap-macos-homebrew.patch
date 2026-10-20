@@ -1,0 +1,41 @@
+diff --git a/cmake/modules/FindLdap.cmake b/cmake/modules/FindLdap.cmake
+index 5f1880cc1..8457f694b 100644
+--- a/cmake/modules/FindLdap.cmake
++++ b/cmake/modules/FindLdap.cmake
+@@ -60,15 +60,29 @@
+ # THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ #=============================================================================
+ 
+-find_path(Ldap_INCLUDE_DIRS NAMES ldap.h)
+-
+ if(APPLE)
+-   find_path(Ldap_LIBRARIES NAMES LDAP
+-	  PATHS
+-	  /System/Library/Frameworks
+-	  /Library/Frameworks
+-   )
++   # The Xcode SDK ships an LDAP.framework, but it is not part of the runtime
++   # system and its headers are SDK-only, so it cannot be linked against in a
++   # redistributable binary.  Use Homebrew's keg-only openldap instead and
++   # deliberately exclude the system/SDK paths so that the SDK framework does
++   # not shadow it.
++   find_path(Ldap_INCLUDE_DIRS NAMES ldap.h
++      HINTS ${OPENLDAP_ROOT} "$ENV{OPENLDAP_ROOT}" /opt/homebrew/opt/openldap/include /usr/local/opt/openldap/include
++      NO_CMAKE_SYSTEM_PATH
++      NO_CMAKE_ENVIRONMENT_PATH
++      )
++   find_library(Ldap_LIBRARIES NAMES ldap
++      HINTS ${OPENLDAP_ROOT} "$ENV{OPENLDAP_ROOT}" /opt/homebrew/opt/openldap/lib /usr/local/opt/openldap/lib
++      NO_CMAKE_SYSTEM_PATH
++      NO_CMAKE_ENVIRONMENT_PATH
++      )
++   find_library(Lber_LIBRARIES NAMES lber
++      HINTS ${OPENLDAP_ROOT} "$ENV{OPENLDAP_ROOT}" /opt/homebrew/opt/openldap/lib /usr/local/opt/openldap/lib
++      NO_CMAKE_SYSTEM_PATH
++      NO_CMAKE_ENVIRONMENT_PATH
++      )
+ else()
++   find_path(Ldap_INCLUDE_DIRS NAMES ldap.h)
+    find_library(Ldap_LIBRARIES NAMES ldap)
+    find_library(Lber_LIBRARIES NAMES lber)
+ endif()

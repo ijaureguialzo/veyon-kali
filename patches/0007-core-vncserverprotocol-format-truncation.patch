@@ -1,0 +1,23 @@
+diff --git a/core/src/VncServerProtocol.cpp b/core/src/VncServerProtocol.cpp
+index 18baeda97..caa297a55 100644
+--- a/core/src/VncServerProtocol.cpp
++++ b/core/src/VncServerProtocol.cpp
+@@ -60,11 +60,16 @@ void VncServerProtocol::start()
+ {
+ 	if( state() == State::Disconnected )
+ 	{
+-		std::array<char, sz_rfbProtocolVersionMsg> protocol{};
++		// One extra byte so that the terminating null produced by snprintf() fits
++		// into the buffer.  Clang's -Wformat-truncation would otherwise abort the
++		// build, as the formatted version string is exactly as long as the
++		// RFB protocol version message.  Only sz_rfbProtocolVersionMsg bytes are
++		// actually sent over the wire.
++		std::array<char, sz_rfbProtocolVersionMsg + 1> protocol{};
+ 
+ 		std::snprintf(protocol.data(), protocol.size(), rfbProtocolVersionFormat, 3, 8); // Flawfinder: ignore
+ 
+-		m_socket->write(protocol.data(), protocol.size());
++		m_socket->write(protocol.data(), sz_rfbProtocolVersionMsg);
+ 
+ 		setState( State::Protocol );
+ 	}

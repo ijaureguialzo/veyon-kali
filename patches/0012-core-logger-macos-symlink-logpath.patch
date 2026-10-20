@@ -1,0 +1,36 @@
+diff --git a/core/src/Logger.cpp b/core/src/Logger.cpp
+index 8f255fd6f..722c006fe 100644
+--- a/core/src/Logger.cpp
++++ b/core/src/Logger.cpp
+@@ -143,6 +143,12 @@ void Logger::initLogFile()
+ 
+ 	if (logDirInfo.isSymLink())
+ 	{
++#ifdef Q_OS_MACOS
++		// On macOS /var is a symlink to /private/var by design and /tmp is a
++		// symlink to /private/tmp, so the default temporary directory always
++		// resolves to a different canonical path.  Removing the symlink would
++		// damage the system, so the check is skipped entirely.
++#else
+ 		vWarning() << logPath << "is a symlink/junction. Replacing with real directory";
+ 
+ 		if (!QFile::remove(logPath))
+@@ -151,6 +157,7 @@ void Logger::initLogFile()
+ 			return;
+ 		}
+ 		logDirInfo = QFileInfo(logPath);
++#endif
+ 	}
+ 
+ 	const QString canonical = logDirInfo.canonicalFilePath();
+@@ -158,8 +165,10 @@ void Logger::initLogFile()
+ 
+ 	if (canonical != absolute)
+ 	{
++#ifndef Q_OS_MACOS
+ 		vCritical() << "Log path or one of its parent directories is a symlink/junction:" << logPath;
+ 		return;
++#endif
+ 	}
+ 
+ 	if (!QDir(logPath).exists())

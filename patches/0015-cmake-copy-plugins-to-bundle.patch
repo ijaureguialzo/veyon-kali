@@ -1,0 +1,50 @@
+diff --git a/cmake/modules/CopyPluginsToBundle.cmake b/cmake/modules/CopyPluginsToBundle.cmake
+new file mode 100644
+index 000000000..8ef4baecf
+--- /dev/null
++++ b/cmake/modules/CopyPluginsToBundle.cmake
+@@ -0,0 +1,44 @@
++# CopyPluginsToBundle.cmake - Copy the built Veyon plugins into the macOS bundle.
++#
++# Invoked in script mode with:
++#   -DPLUGINS_DIR=<build>/plugins
++#   -DBUNDLE_DIR=<build>/Veyon.app
++#
++# The PluginManager only looks for modules directly inside the plugin
++# directory (QDir::entryInfoList is not recursive), so only the modules that
++# are built in "<plugins>/<plugin>/" are copied.  Build artefacts such as
++# CMakeFiles/ are therefore not copied.
++
++if(NOT DEFINED PLUGINS_DIR OR NOT DEFINED BUNDLE_DIR)
++	message(FATAL_ERROR "PLUGINS_DIR and BUNDLE_DIR must be defined")
++endif()
++
++# The plugins are built in "<plugins>/<plugin>/" and the platform plugins in
++# "<plugins>/platform/<platform>/", so both levels are scanned.
++file(GLOB plugin_dirs "${PLUGINS_DIR}/*" "${PLUGINS_DIR}/platform/*")
++
++set(copied 0)
++foreach(plugin_dir ${plugin_dirs})
++	if(NOT IS_DIRECTORY "${plugin_dir}")
++		continue()
++	endif()
++	# Skip the CMake bookkeeping directory.
++	get_filename_component(dir_name "${plugin_dir}" NAME)
++	if(dir_name STREQUAL "CMakeFiles")
++		continue()
++	endif()
++
++	file(GLOB modules "${plugin_dir}/*.so")
++	foreach(module ${modules})
++		execute_process(
++			COMMAND ${CMAKE_COMMAND} -E copy "${module}" "${BUNDLE_DIR}/Contents/PlugIns/"
++			RESULT_VARIABLE copy_result
++			)
++		if(NOT copy_result EQUAL 0)
++			message(FATAL_ERROR "Failed to copy ${module}")
++		endif()
++		math(EXPR copied "${copied} + 1")
++	endforeach()
++endforeach()
++
++message(STATUS "Copied ${copied} plugin(s) into the bundle")
