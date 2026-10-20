@@ -683,7 +683,7 @@ ScreenCaptureKit cuando el resto del pipeline esté sólido.
 
 ---
 
-## 8. Estado real de implementación (actualizado 2026-10-20)
+## 8. Estado real de implementación (actualizado 2026-10-21)
 
 Lo que sigue describe **lo que ya está hecho y verificado**, no lo planificado.
 
@@ -692,10 +692,11 @@ Lo que sigue describe **lo que ya está hecho y verificado**, no lo planificado.
 | Objetivo | Estado | Verificación |
 |---|---|---|
 | Configure de CMake en macOS | ✅ Funcional | `cmake -S . -B build -G Ninja` sin errores |
-| Build completo (Qt 6.12, arm64) | ✅ Funcional | ~26 s desde cero con Ninja |
+| Build completo (Qt 6.12, arm64) | ✅ Funcional | ~35 s desde cero con Ninja |
 | `veyon-cli` / `veyon-master` / `veyon-configurator` | ✅ Funcional | ventana "Veyon Logon" abierta en macOS |
 | Plugin de plataforma macOS | ✅ Funcional | `MacOSPlatformPlugin` cargado, 15 plugins |
 | Bundle `Veyon.app` | ✅ Funcional | se ejecuta **sin `DYLD_LIBRARY_PATH`** |
+| Bundle autosuficiente | ✅ Funcional | **0 referencias** a Homebrew en runtime y en `otool -L` |
 | Disco `Veyon-4.11.2.dmg` | ✅ Funcional | contiene bundle + symlink a `/Applications` |
 | Build Kali `arm64` | ✅ Intacto | `veyon_4.11.2.0_arm64.deb` generado y validado |
 
@@ -718,10 +719,12 @@ veyon-kali/
 │   ├── 0012-core-logger-macos-symlink-logpath.patch
 │   ├── 0014-cmake-macos-bundle-target.patch
 │   ├── 0015-cmake-copy-plugins-to-bundle.patch
-│   └── 0016-cmake-macos-info-plist.patch
+│   ├── 0016-cmake-macos-info-plist.patch
+│   └── 0017-core-register-plugin-library-path-before-qca.patch
 ├── scripts/
 │   ├── build-veyon.sh          # sin cambios (Kali)
 │   ├── build-veyon-macos.sh    # NUEVO: build nativo macOS
+│   ├── deploy-veyon-macos.sh   # NUEVO: bundle autosuficiente
 │   └── package-veyon-macos.sh  # NUEVO: bundle .app → DMG
 └── build/veyon-macos/          # workspace editable (generado, no versionado)
 ```
@@ -780,6 +783,8 @@ dependencias innecesarias.
 | `Log path ... is a symlink/junction` | `/var` es symlink a `/private/var` en macOS | se omite la comprobación en Apple (parche 0012) |
 | `-Wformat-truncation` | buffer RFB de 13 bytes, envío de 12 | parche 0007 |
 | PCH pierde `-fstack-protector-strong` | sobrescritura de `COMPILE_OPTIONS` | `target_compile_options` (parche 0008) |
+| QCA carga los providers de Homebrew | ruta de plugins compilada en el framework de QCA | ruta neutralizada + `initLibraryPaths()` (parche 0017) |
+| El bundle carga el *legacy provider* de OpenSSL de Homebrew | `MODULESDIR` compilado en `libcrypto` | directorio neutralizado en el despliegue |
 
 ### 8.6 Estado funcional del plugin macOS
 
@@ -794,26 +799,92 @@ dependencias innecesarias.
 | User | ✅ grupos y autenticación Open Directory (`dscl -authonly`); logon/logoff gráfico no soportado |
 | Captura de pantalla | ❌ sin backend nativo; `external-vnc-server` es la vía inicial |
 
-### 8.7 Limitaciones conocidas
+### 8.7 Bundle autosuficiente
+
+El bundle generado por `scripts/deploy-veyon-macos.sh` no depende de la
+instalación de Homebrew en tiempo de ejecución. Las dos piezas que lo hacen
+posible merecen detalle, porque no son obvias.
+
+#### Carga de los providers de QCA
+
+QCA compila en su framework la ruta en la que se instalaron sus plugins
+(la macro `QCA_PLUGIN_PATH`) y la añade **siempre** a la lista de rutas que
+explora, por encima de las que registra la aplicación:
+
+```cpp
+// qca_core.cpp (QCA::pluginPaths)
+paths += QCoreApplication::libraryPaths();
+paths << QDir(QStringLiteral(QCA_PLUGIN_PATH)).canonicalPath();
+```
+
+En el framework de Homebrew ese literal es
+`/opt/homebrew/Cellar/qca/2.3.12_1/lib/qt/plugins`, codificado como
+`QStringLiteral` (UTF-16LE) en la sección `__ustring`. Por eso el bundle
+cargaba los providers de Homebrew —y con ellos una segunda copia de Qt— en
+lugar de los suyos.
+
+La solución tiene tres partes:
+
+1. **Los providers van en `Contents/PlugIns/crypto`.** QCA busca en el
+   subdirectorio `crypto` de cada ruta, no en la raíz.
+2. **La ruta compilada se neutraliza.** Se sustituye el literal por una
+   ruta inexistente conservando su longitud exacta (la longitud de un
+   `QStringLiteral` está fijada en el código). `QDir::canonicalPath()`
+   devuelve una cadena vacía para una ruta inexistente y QCA la descarta.
+3. **La ruta del bundle se registra antes de que arranque QCA.** El
+   `PluginManager` añadía `Contents/PlugIns` a las rutas de Qt *después* de
+   que `CryptoCore` construyera QCA, que es cuando se escanean los
+   providers. El parche 0017 añade `VeyonCore::initLibraryPaths()` antes de
+   `initCryptoCore()`.
+
+Resultado: los cuatro providers (`ossl`, `softstore`, `logger`,
+`cyrus-sasl`) se cargan desde `Contents/PlugIns/crypto`.
+
+#### Neutralización del directorio de módulos de OpenSSL
+
+OpenSSL 4 compila en `libcrypto` la ruta de sus providers opcionales
+(`MODULESDIR`) y carga automáticamente el *legacy provider* al
+inicializarse. Esa ruta apuntaba a Homebrew. El *legacy provider* sólo
+aporta algoritmos que Veyon no usa, así que la ruta se sustituye por una
+inexistente y OpenSSL sigue funcionando con los providers que ya trae
+incorporados.
+
+#### Verificación
+
+```sh
+# El bundle se copia fuera del directorio de trabajo y se ejecuta con un
+# entorno mínimo, sin Homebrew en el PATH.
+cp -R build/veyon-macos/build/Veyon.app /tmp/veyon-reloc/
+env -i HOME="$HOME" PATH=/usr/bin:/bin \
+    DYLD_PRINT_LIBRARIES=1 \
+    /tmp/veyon-reloc/Veyon.app/Contents/MacOS/veyon-cli plugin list \
+    | grep -cE "Cellar|/opt/homebrew|/usr/local"
+# -> 0
+```
+
+El mismo escaneo con `otool -L` sobre todos los binarios del bundle
+(devuelve 0 referencias) y la ejecución desde el DMG montado confirman que
+no queda ninguna dependencia externa.
+
+### 8.8 Limitaciones conocidas
 
 1. **TCC**: Screen Recording y Accessibility hay que concederlos manualmente.
-2. **Dependencias de Homebrew en runtime**: los binarios enlazan contra
-   `/opt/homebrew/...`. Para una distribución autosuficiente habría que
-   empaquetar los frameworks Qt con `macdeployqt` y reescribir los `rpath`.
-3. **Sin firma ni notarización**: el bundle no está firmado, por lo que
-   Gatekeeper lo bloqueará en otros equipos.
-4. **El `rpath` de los binarios de Homebrew** apunta a la ruta de instalación
-   de Homebrew; funciona en esta máquina, no en un equipo limpio.
-5. **El plugin no implementa la captura de pantalla nativa**: la función
+2. **Sin firma ni notarización**: el bundle se firma *ad hoc*, lo que permite
+   ejecutarlo localmente pero no distriburlo. Gatekeeper bloqueará la
+   instalación en otros equipos hasta que se firme con Developer ID y se
+   notarice.
+3. **El plugin no implementa la captura de pantalla nativa**: la función
    `takeScreenshot` no está disponible; hay que usar `external-vnc-server`.
+4. **`hdiutil` está obsoleto**: `scripts/package-veyon-macos.sh` genera
+   avisos de deprecación; el resultado es válido, pero debería migrarse a
+   `diskutil`.
 
-### 8.8 Siguientes pasos pendientes
+### 8.9 Siguientes pasos pendientes
 
-1. Empaquetar los frameworks Qt con `macdeployqt` para eliminar la
-   dependencia de Homebrew en runtime.
-2. Firmar y notarizar el bundle (`codesign`, `notarytool`).
-3. Implementar la captura nativa con ScreenCaptureKit (macOS 13+).
-4. Completar los *stubs*: ping, firewall, velocidad de red, CFPreferences,
+1. Firmar y notarizar el bundle (`codesign`, `notarytool`).
+2. Implementar la captura nativa con ScreenCaptureKit (macOS 13+).
+3. Completar los *stubs*: ping, firewall, velocidad de red, CFPreferences,
    logon/logoff.
-5. Validar `veyon-service` como servicio launchd en un sistema real.
-6. Crear el rol de Ansible `roles/instalar-veyon-macos` para el despliegue.
+4. Validar `veyon-service` como servicio launchd en un sistema real.
+5. Crear el rol de Ansible `roles/instalar-veyon-macos` para el despliegue.
+6. Migrar `scripts/package-veyon-macos.sh` de `hdiutil` a `diskutil`.
