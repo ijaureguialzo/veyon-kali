@@ -1,0 +1,1543 @@
+diff --git a/plugins/vncserver/screencapturekit/CMakeLists.txt b/plugins/vncserver/screencapturekit/CMakeLists.txt
+new file mode 100644
+index 000000000..53b332b35
+--- /dev/null
++++ b/plugins/vncserver/screencapturekit/CMakeLists.txt
+@@ -0,0 +1,45 @@
++include(BuildVeyonPlugin)
++
++build_veyon_plugin(screencapturekit-vnc-server
++	NAME ScreenCaptureKitVncServer
++	SOURCES
++	ScreenCaptureKitCapturer.h
++	ScreenCaptureKitCapturer.mm
++	ScreenCaptureKitConfiguration.h
++	ScreenCaptureKitVncServer.cpp
++	ScreenCaptureKitVncServer.h
++	ScreenCaptureKitVncServerConfigurationWidget.cpp
++	ScreenCaptureKitVncServerConfigurationWidget.h
++	ScreenCaptureKitVncServerConfigurationWidget.ui
++	)
++
++# The screen capture uses the ScreenCaptureKit framework, which is an
++# Objective-C API.  The implementation is therefore compiled as Objective-C++.
++#
++# The shared precompiled header is built as plain C++ and therefore cannot be
++# reused from Objective-C++ translation units, so the precompiled headers and
++# the unity build have to be disabled for them.
++set_source_files_properties(
++	ScreenCaptureKitCapturer.mm
++	PROPERTIES
++		COMPILE_FLAGS "-x objective-c++"
++		SKIP_UNITY_BUILD_INCLUSION TRUE
++		SKIP_PRECOMPILE_HEADERS TRUE
++)
++
++target_link_libraries(screencapturekit-vnc-server PRIVATE
++	Qt${QT_MAJOR_VERSION}::Widgets
++	"-framework ScreenCaptureKit"
++	"-framework AVFoundation"
++	"-framework CoreMedia"
++	"-framework CoreVideo"
++	"-framework CoreGraphics"
++)
++
++if(WITH_BUNDLED_LIBVNC)
++	target_link_libraries(screencapturekit-vnc-server PRIVATE vncserver)
++else()
++	target_link_libraries(screencapturekit-vnc-server PRIVATE LibVNC::LibVNCServer)
++endif()
++
++target_compile_options(screencapturekit-vnc-server PRIVATE -Wno-parentheses)
+diff --git a/plugins/vncserver/screencapturekit/ScreenCaptureKitCapturer.h b/plugins/vncserver/screencapturekit/ScreenCaptureKitCapturer.h
+new file mode 100644
+index 000000000..6b668b3a6
+--- /dev/null
++++ b/plugins/vncserver/screencapturekit/ScreenCaptureKitCapturer.h
+@@ -0,0 +1,157 @@
++/*
++ * ScreenCaptureKitCapturer.h - declaration of ScreenCaptureKitCapturer class
++ *
++ * Copyright (c) 2026 Veyon Community
++ *
++ * This file is part of Veyon - https://veyon.io
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program (see COPYING); if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 02111-1307, USA.
++ *
++ */
++
++#pragma once
++
++#include <QImage>
++#include <QObject>
++#include <QSize>
++#include <QString>
++
++#include <mutex>
++
++// The capturer is used by another translation unit of the same plugin, so
++// its symbols have to be exported explicitly.  The plugin is built with
++// hidden visibility by default.
++#if defined(screencapturekit_vnc_server_EXPORTS)
++#  define VEYON_SCREENCAPTUREKIT_EXPORT Q_DECL_EXPORT
++#else
++#  define VEYON_SCREENCAPTUREKIT_EXPORT Q_DECL_IMPORT
++#endif
++
++// The Objective-C types are only known in the implementation file, so they
++// are stored as opaque pointers here.  They cannot be forward declared as
++// C++ classes, because the ScreenCaptureKit framework declares them as
++// Objective-C classes.
++
++/*!
++ * \brief Captures the screen contents using ScreenCaptureKit
++ *
++ * ScreenCaptureKit delivers the captured frames in a callback of its own
++ * thread.  The frames are stored in a framebuffer that is protected by a
++ * mutex, so that the VNC server thread can pick them up safely.
++ *
++ * The class requires the "Screen Recording" privacy permission.  Without
++ * it, ScreenCaptureKit refuses to provide any content and reports an
++ * error.
++ */
++class VEYON_SCREENCAPTUREKIT_EXPORT ScreenCaptureKitCapturer : public QObject
++{
++	Q_OBJECT
++public:
++	ScreenCaptureKitCapturer( QObject* parent = nullptr );
++	~ScreenCaptureKitCapturer() override;
++
++	/*!
++	 * \brief Starts the screen capture
++	 *
++	 * \param framesPerSecond The requested frame rate
++	 * \param captureAllDisplays Whether all displays are combined
++	 * \param displayIndex The index of the display to capture
++	 * \param maximumSize The maximum size of the captured frames
++	 * \return True if the capture was started
++	 */
++	bool start( int framesPerSecond, bool captureAllDisplays, int displayIndex, const QSize& maximumSize );
++
++	/*!
++	 * \brief Stops the screen capture
++	 */
++	void stop();
++
++	/*!
++	 * \brief Returns whether the capture is currently running
++	 */
++	bool isRunning() const;
++
++	/*!
++	 * \brief Returns the last captured frame
++	 *
++	 * An invalid image is returned if no frame has been captured yet.
++	 */
++	QImage currentFrame() const;
++
++	/*!
++	 * \brief Returns whether a new frame is available since the last call
++	 */
++	bool hasNewFrame() const;
++
++	/*!
++	 * \brief Marks the current frame as processed
++	 */
++	void resetNewFrame();
++
++	/*!
++	 * \brief Returns the size of the captured frames
++	 */
++	QSize framebufferSize() const;
++
++	/*!
++	 * \brief Returns a human readable description of the last error
++	 */
++	QString lastError() const;
++
++	/*!
++	 * \brief Returns whether ScreenCaptureKit is available on this system
++	 *
++	 * ScreenCaptureKit requires macOS 13 or later.
++	 */
++	static bool isAvailable();
++
++	/*!
++	 * \brief Returns whether the screen recording permission has been granted
++	 */
++	static bool hasScreenRecordingPermission();
++
++	/*!
++	 * \brief Requests the screen recording permission
++	 *
++	 * On macOS the permission is granted by the user in the system
++	 * settings, so this only triggers the system prompt.
++	 */
++	static void requestScreenRecordingPermission();
++
++Q_SIGNALS:
++	/*!
++	 * \brief Emitted when a new frame has been captured
++	 */
++	void frameCaptured();
++
++	/*!
++	 * \brief Emitted when the capture failed
++	 */
++	void captureError( const QString& message );
++
++private:
++	mutable std::mutex m_frameMutex;
++	QImage m_frame;
++	QSize m_framebufferSize;
++	bool m_newFrame{false};
++	QString m_errorMessage;
++
++	void* m_stream{nullptr};
++	void* m_contentFilter{nullptr};
++	void* m_streamConfiguration{nullptr};
++	void* m_streamOutput{nullptr};
++	void* m_callbackQueue{nullptr};
++};
+diff --git a/plugins/vncserver/screencapturekit/ScreenCaptureKitCapturer.mm b/plugins/vncserver/screencapturekit/ScreenCaptureKitCapturer.mm
+new file mode 100644
+index 000000000..0d6f123d2
+--- /dev/null
++++ b/plugins/vncserver/screencapturekit/ScreenCaptureKitCapturer.mm
+@@ -0,0 +1,584 @@
++/*
++ * ScreenCaptureKitCapturer.mm - implementation of ScreenCaptureKitCapturer class
++ *
++ * Copyright (c) 2026 Veyon Community
++ *
++ * This file is part of Veyon - https://veyon.io
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program (see COPYING); if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 02111-1307, USA.
++ *
++ */
++
++#include "ScreenCaptureKitCapturer.h"
++
++#include "VeyonCore.h"
++
++// ScreenCaptureKit is only available on macOS 13 and later.  The whole
++// implementation is therefore guarded, so that the plugin can still be
++// compiled (and simply report an error at runtime) on older systems.
++//
++// The version macros of the SDK are only available after the headers of the
++// system frameworks have been included, so the frameworks are imported first
++// and the availability is checked afterwards.
++//
++// Clang does not define __MAC_OS_X_VERSION_MIN_REQUIRED.  The version of the
++// SDK that is used is available as __MAC_OS_X_VERSION_MAX_ALLOWED and the
++// version of the deployment target as
++// __ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__.
++#import <Availability.h>
++#import <ScreenCaptureKit/ScreenCaptureKit.h>
++#import <AVFoundation/AVFoundation.h>
++#import <CoreMedia/CoreMedia.h>
++#import <CoreVideo/CoreVideo.h>
++
++// ScreenCaptureKit was introduced with macOS 13 (13.00.00 == 130000).
++#if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && ( __MAC_OS_X_VERSION_MAX_ALLOWED >= 130000 ) && ( __ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__ >= 130000 )
++
++#define VEYON_SCREENCAPTUREKIT_AVAILABLE 1
++
++#include <mutex>
++
++namespace vnc {
++
++/*!
++ * \brief Output handler of the screen capture stream
++ *
++ * ScreenCaptureKit delivers the frames through the output handler, which
++ * is called in the queue that was given to "addStreamOutput".  The frames
++ * are copied into a framebuffer that is protected by a mutex, so that the
++ * VNC server thread can pick them up safely.
++ */
++} // namespace vnc
++
++@interface ScreenCaptureKitStreamOutput : NSObject < SCStreamOutput >
++{
++	std::mutex* m_frameMutex;
++	QImage* m_frame;
++	QSize* m_framebufferSize;
++	bool* m_newFrame;
++	ScreenCaptureKitCapturer* m_capturer;
++}
++
++- (instancetype)initWithFrameMutex: (std::mutex*) frameMutex
++							  frame: (QImage*) frame
++					   framebufferSize: (QSize*) framebufferSize
++						  newFrame: (bool*) newFrame
++						   capturer: (ScreenCaptureKitCapturer*) capturer;
++
++@end
++
++@implementation ScreenCaptureKitStreamOutput
++
++- (instancetype)initWithFrameMutex: (std::mutex*) frameMutex
++							  frame: (QImage*) frame
++					   framebufferSize: (QSize*) framebufferSize
++						  newFrame: (bool*) newFrame
++						   capturer: (ScreenCaptureKitCapturer*) capturer
++{
++	if( (self = [super init]) )
++	{
++		m_frameMutex = frameMutex;
++		m_frame = frame;
++		m_framebufferSize = framebufferSize;
++		m_newFrame = newFrame;
++		m_capturer = capturer;
++	}
++	return self;
++}
++
++- (void)stream: (SCStream*) stream didOutputSampleBuffer: (CMSampleBufferRef) sampleBuffer ofType: (SCStreamOutputType) type
++{
++	Q_UNUSED( stream )
++	Q_UNUSED( type )
++
++	if( sampleBuffer == nullptr )
++	{
++		return;
++	}
++
++	CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer( sampleBuffer );
++	if( imageBuffer == nullptr )
++	{
++		return;
++	}
++
++	const auto width = static_cast<int>( CVPixelBufferGetWidth( imageBuffer ) );
++	const auto height = static_cast<int>( CVPixelBufferGetHeight( imageBuffer ) );
++	if( width <= 0 || height <= 0 )
++	{
++		return;
++	}
++
++	CVPixelBufferLockBaseAddress( imageBuffer, kCVPixelBufferLock_ReadOnly );
++	const auto baseAddress = CVPixelBufferGetBaseAddress( imageBuffer );
++	const auto bytesPerRow = CVPixelBufferGetBytesPerRow( imageBuffer );
++	CVPixelBufferUnlockBaseAddress( imageBuffer, kCVPixelBufferLock_ReadOnly );
++
++	if( baseAddress == nullptr || bytesPerRow <= 0 )
++	{
++		return;
++	}
++
++	// The frames are delivered in the BGRA format, which has the same
++	// memory layout as QImage::Format_RGB32 on little endian machines.
++	const QImage source( static_cast<const uchar *>( baseAddress ),
++						 width, height, static_cast<int>( bytesPerRow ), QImage::Format_RGB32 );
++
++	{
++		std::lock_guard<std::mutex> lock( *m_frameMutex );
++		*m_frame = source.copy();
++		*m_framebufferSize = source.size();
++		*m_newFrame = true;
++	}
++
++	if( m_capturer != nullptr )
++	{
++		// The signal is emitted from the capture queue, so the receivers
++		// are notified in their own thread.  The signal is invoked through
++		// the meta object system, because the "emit" macro of Qt is not
++		// available in Objective-C++ translation units.
++		QMetaObject::invokeMethod( m_capturer, SIGNAL( frameCaptured() ) );
++	}
++}
++
++@end
++
++
++
++ScreenCaptureKitCapturer::ScreenCaptureKitCapturer( QObject* parent ) :
++	QObject( parent )
++{
++}
++
++
++
++ScreenCaptureKitCapturer::~ScreenCaptureKitCapturer()
++{
++	stop();
++}
++
++
++
++bool ScreenCaptureKitCapturer::isAvailable()
++{
++	return true;
++}
++
++
++
++bool ScreenCaptureKitCapturer::hasScreenRecordingPermission()
++{
++	// CGPreflightScreenCaptureAccess() returns true when the process is
++	// allowed to capture the screen.  It does not trigger any prompt.
++	return CGPreflightScreenCaptureAccess() != false;
++}
++
++
++
++void ScreenCaptureKitCapturer::requestScreenRecordingPermission()
++{
++	// This triggers the system prompt, if the permission has not been
++	// requested yet.  The user has to grant it in the system settings.
++	CGRequestScreenCaptureAccess();
++}
++
++
++
++bool ScreenCaptureKitCapturer::start( int framesPerSecond, bool captureAllDisplays, int displayIndex, const QSize& maximumSize )
++{
++	if( isRunning() )
++	{
++		return true;
++	}
++
++	if( hasScreenRecordingPermission() == false )
++	{
++		m_errorMessage = tr( "The \"Screen Recording\" privacy permission has not been granted. "
++							  "Grant it in the system settings under Privacy & Security > Screen Recording." );
++		return false;
++	}
++
++	// The list of the capturable displays is needed to build the content
++	// filter.  The API is asynchronous, so a semaphore is used to wait for
++	// the result without blocking the Qt event loop for too long.
++	auto semaphore = dispatch_semaphore_create( 0 );
++	__block SCShareableContent* shareableContent = nil;
++	__block NSError* contentError = nil;
++
++	[ SCShareableContent getShareableContentWithCompletionHandler: ^( SCShareableContent* content, NSError* error ) {
++		shareableContent = [ content retain ];
++		contentError = [ error retain ];
++		dispatch_semaphore_signal( semaphore );
++	} ];
++
++	const auto waitResult = dispatch_semaphore_wait( semaphore,
++													dispatch_time( DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC ) );
++	dispatch_release( semaphore );
++	if( waitResult != 0 || shareableContent == nil )
++	{
++		m_errorMessage = tr( "Could not access the screen content: %1" )
++				.arg( contentError != nil ? QString::fromNSString( contentError.localizedDescription ) :
++					   tr( "the screen recording permission was denied" ) );
++		vCritical() << m_errorMessage;
++		[ contentError release ];
++		[ shareableContent release ];
++		return false;
++	}
++
++	SCDisplay* targetDisplay = nil;
++
++	if( shareableContent.displays.count == 0 )
++	{
++		// ScreenCaptureKit only reports the displays that are currently
++		// active.  On a machine whose displays are asleep (for example a
++		// headless server or a remote session without a physical display)
++		// no display is available at all, so the capture cannot be set up.
++		m_errorMessage = tr( "No active display could be captured. The displays of this "
++							  "computer are most likely asleep or the computer is running "
++							  "headless. ScreenCaptureKit requires an active display." );
++		vCritical() << m_errorMessage;
++		[ contentError release ];
++		[ shareableContent release ];
++		return false;
++	}
++
++	if( captureAllDisplays == false )
++	{
++		if( displayIndex < 0 || displayIndex >= static_cast<int>( shareableContent.displays.count ) )
++		{
++			m_errorMessage = tr( "Display index %1 is out of range." ).arg( displayIndex );
++			vCritical() << m_errorMessage;
++			[ contentError release ];
++			[ shareableContent release ];
++			return false;
++		}
++		targetDisplay = shareableContent.displays[ displayIndex ];
++	}
++	else
++	{
++		// ScreenCaptureKit captures one display per content filter.  When
++		// all displays are requested, the first one is used, because it
++		// always contains the desktop and the dock.
++		targetDisplay = shareableContent.displays[ 0 ];
++	}
++
++	// The content filter covers the whole display, including the desktop
++	// background and the dock.
++	SCContentFilter* contentFilter = [[SCContentFilter alloc] initWithDisplay: targetDisplay
++																excludingWindows:@[]];
++	m_contentFilter = contentFilter;
++
++	SCStreamConfiguration* streamConfiguration = [[SCStreamConfiguration alloc] init];
++	m_streamConfiguration = streamConfiguration;
++	streamConfiguration.capturesAudio = NO;
++	streamConfiguration.showsCursor = YES;
++	streamConfiguration.queueDepth = 3;
++	streamConfiguration.minimumFrameInterval = CMTimeMake( 1, MAX( 1, framesPerSecond ) );
++
++	if( captureAllDisplays )
++	{
++		// The size of the combined desktop is the sum of the widths of all
++		// the displays and the height of the tallest one.
++		CGFloat totalWidth = 0;
++		CGFloat totalHeight = 0;
++		for( SCDisplay* display in shareableContent.displays )
++		{
++			totalWidth += display.width;
++			totalHeight = MAX( totalHeight, display.height );
++		}
++
++		streamConfiguration.width = static_cast<size_t>( totalWidth );
++		streamConfiguration.height = static_cast<size_t>( totalHeight );
++	}
++	else
++	{
++		streamConfiguration.width = static_cast<size_t>( targetDisplay.width );
++		streamConfiguration.height = static_cast<size_t>( targetDisplay.height );
++	}
++
++	// The frames are scaled down if they are bigger than the configured
++	// maximum size.
++	if( maximumSize.isValid() && maximumSize.isEmpty() == false )
++	{
++		const auto width = static_cast<size_t>( streamConfiguration.width );
++		const auto height = static_cast<size_t>( streamConfiguration.height );
++
++		if( width > static_cast<size_t>( maximumSize.width() ) ||
++			height > static_cast<size_t>( maximumSize.height() ) )
++		{
++			const auto scale = qMin( static_cast<double>( maximumSize.width() ) / width,
++									 static_cast<double>( maximumSize.height() ) / height );
++			streamConfiguration.width = static_cast<size_t>( width * scale );
++			streamConfiguration.height = static_cast<size_t>( height * scale );
++		}
++	}
++
++	// BGRA is the format that matches QImage::Format_RGB32 (little endian
++	// with the shifts 16/8/0 that libVNC expects).
++	streamConfiguration.pixelFormat = kCVPixelFormatType_32BGRA;
++
++	dispatch_queue_t callbackQueue = dispatch_queue_create( "io.veyon.screencapturekit", DISPATCH_QUEUE_SERIAL );
++	m_callbackQueue = callbackQueue;
++
++	SCStream* stream = [[SCStream alloc] initWithFilter: contentFilter
++										  configuration: streamConfiguration
++											  delegate: nil];
++	m_stream = stream;
++
++	ScreenCaptureKitStreamOutput* output =
++			[[ScreenCaptureKitStreamOutput alloc] initWithFrameMutex: &m_frameMutex
++															   frame: &m_frame
++													framebufferSize: &m_framebufferSize
++														  newFrame: &m_newFrame
++														   capturer: this];
++	m_streamOutput = output;
++
++	NSError* addOutputError = nil;
++	[ stream addStreamOutput: output
++						type: SCStreamOutputTypeScreen
++		sampleHandlerQueue: callbackQueue
++					   error: &addOutputError ];
++
++	if( addOutputError != nil )
++	{
++		m_errorMessage = tr( "Could not add the screen capture output: %1" )
++				.arg( QString::fromNSString( addOutputError.localizedDescription ) );
++		vCritical() << m_errorMessage;
++		[ addOutputError release ];
++		stop();
++		return false;
++	}
++
++	// The capture is started asynchronously, so the result is waited for
++	// with a semaphore.
++	auto startSemaphore = dispatch_semaphore_create( 0 );
++	__block NSError* startError = nil;
++
++	[ stream startCaptureWithCompletionHandler: ^( NSError* error ) {
++		startError = [ error retain ];
++		dispatch_semaphore_signal( startSemaphore );
++	} ];
++
++	dispatch_semaphore_wait( startSemaphore, dispatch_time( DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC ) );
++	dispatch_release( startSemaphore );
++
++	if( startError != nil )
++	{
++		m_errorMessage = tr( "Could not start the screen capture: %1" )
++				.arg( QString::fromNSString( startError.localizedDescription ) );
++		vCritical() << m_errorMessage;
++		[ startError release ];
++		stop();
++		return false;
++	}
++
++	[ startError release ];
++
++	vInfo() << "screen capture started at" << framesPerSecond << "fps,"
++			<< static_cast<int>( streamConfiguration.width ) << "x"
++			<< static_cast<int>( streamConfiguration.height );
++
++	// The shareable content is not needed any more, the display and the
++	// content filter keep the required information.
++	[ contentError release ];
++	[ shareableContent release ];
++
++	return true;
++}
++
++
++
++void ScreenCaptureKitCapturer::stop()
++{
++	if( m_stream != nullptr )
++	{
++		SCStream* stream = static_cast<SCStream*>( m_stream );
++
++		auto semaphore = dispatch_semaphore_create( 0 );
++		[ stream stopCaptureWithCompletionHandler: ^( NSError* error ) {
++			Q_UNUSED( error )
++			dispatch_semaphore_signal( semaphore );
++		} ];
++		dispatch_semaphore_wait( semaphore, dispatch_time( DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC ) );
++		dispatch_release( semaphore );
++
++		[ stream release ];
++		m_stream = nullptr;
++	}
++
++	// The output handler is retained by the stream, so it has to be released
++	// explicitly.
++	if( m_streamOutput != nullptr )
++	{
++		[ static_cast<id>( m_streamOutput ) release ];
++		m_streamOutput = nullptr;
++	}
++
++	if( m_contentFilter != nullptr )
++	{
++		[ static_cast<id>( m_contentFilter ) release ];
++		m_contentFilter = nullptr;
++	}
++
++	if( m_streamConfiguration != nullptr )
++	{
++		[ static_cast<id>( m_streamConfiguration ) release ];
++		m_streamConfiguration = nullptr;
++	}
++
++	if( m_callbackQueue != nullptr )
++	{
++		dispatch_release( static_cast<dispatch_queue_t>( m_callbackQueue ) );
++		m_callbackQueue = nullptr;
++	}
++}
++
++
++
++bool ScreenCaptureKitCapturer::isRunning() const
++{
++	return m_stream != nullptr;
++}
++
++
++
++QImage ScreenCaptureKitCapturer::currentFrame() const
++{
++	std::lock_guard<std::mutex> lock( m_frameMutex );
++	return m_frame;
++}
++
++
++
++bool ScreenCaptureKitCapturer::hasNewFrame() const
++{
++	std::lock_guard<std::mutex> lock( m_frameMutex );
++	return m_newFrame;
++}
++
++
++
++void ScreenCaptureKitCapturer::resetNewFrame()
++{
++	std::lock_guard<std::mutex> lock( m_frameMutex );
++	m_newFrame = false;
++}
++
++
++
++QSize ScreenCaptureKitCapturer::framebufferSize() const
++{
++	std::lock_guard<std::mutex> lock( m_frameMutex );
++	return m_framebufferSize;
++}
++
++
++
++QString ScreenCaptureKitCapturer::lastError() const
++{
++	return m_errorMessage;
++}
++
++#else // ! VEYON_SCREENCAPTUREKIT_AVAILABLE
++
++// The whole implementation is not available on systems without
++// ScreenCaptureKit, so only the fallback methods are compiled.
++
++ScreenCaptureKitCapturer::ScreenCaptureKitCapturer( QObject* parent ) :
++	QObject( parent )
++{
++}
++
++
++
++ScreenCaptureKitCapturer::~ScreenCaptureKitCapturer()
++{
++}
++
++
++
++bool ScreenCaptureKitCapturer::isAvailable()
++{
++	return false;
++}
++
++
++
++bool ScreenCaptureKitCapturer::hasScreenRecordingPermission()
++{
++	return false;
++}
++
++
++
++void ScreenCaptureKitCapturer::requestScreenRecordingPermission()
++{
++}
++
++
++
++bool ScreenCaptureKitCapturer::start( int framesPerSecond, bool captureAllDisplays, int displayIndex, const QSize& maximumSize )
++{
++	Q_UNUSED( framesPerSecond )
++	Q_UNUSED( captureAllDisplays )
++	Q_UNUSED( displayIndex )
++	Q_UNUSED( maximumSize )
++
++	m_errorMessage = tr( "ScreenCaptureKit requires macOS 13 or later." );
++	return false;
++}
++
++
++
++void ScreenCaptureKitCapturer::stop()
++{
++}
++
++
++
++QImage ScreenCaptureKitCapturer::currentFrame() const
++{
++	return {};
++}
++
++
++
++bool ScreenCaptureKitCapturer::hasNewFrame() const
++{
++	return false;
++}
++
++
++
++void ScreenCaptureKitCapturer::resetNewFrame()
++{
++}
++
++
++
++QSize ScreenCaptureKitCapturer::framebufferSize() const
++{
++	return {};
++}
++
++
++
++QString ScreenCaptureKitCapturer::lastError() const
++{
++	return m_errorMessage;
++}
++
++#endif // VEYON_SCREENCAPTUREKIT_AVAILABLE
+diff --git a/plugins/vncserver/screencapturekit/ScreenCaptureKitConfiguration.h b/plugins/vncserver/screencapturekit/ScreenCaptureKitConfiguration.h
+new file mode 100644
+index 000000000..98f54183f
+--- /dev/null
++++ b/plugins/vncserver/screencapturekit/ScreenCaptureKitConfiguration.h
+@@ -0,0 +1,36 @@
++/*
++ * ScreenCaptureKitConfiguration.h - ScreenCaptureKit VNC server specific configuration values
++ *
++ * Copyright (c) 2026 Veyon Community
++ *
++ * This file is part of Veyon - https://veyon.io
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program (see COPYING); if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 02111-1307, USA.
++ *
++ */
++
++#pragma once
++
++#include "Configuration/Proxy.h"
++
++#define FOREACH_SCREENCAPTUREKIT_VNC_CONFIG_PROPERTY(OP) \
++    OP( ScreenCaptureKitConfiguration, m_configuration, int, framesPerSecond, setFramesPerSecond, "FramesPerSecond", "ScreenCaptureKitVncServer", 15, Configuration::Property::Flag::Standard ) \
++    OP( ScreenCaptureKitConfiguration, m_configuration, bool, captureAllDisplays, setCaptureAllDisplays, "CaptureAllDisplays", "ScreenCaptureKitVncServer", true, Configuration::Property::Flag::Standard ) \
++    OP( ScreenCaptureKitConfiguration, m_configuration, int, displayIndex, setDisplayIndex, "DisplayIndex", "ScreenCaptureKitVncServer", 0, Configuration::Property::Flag::Advanced ) \
++    OP( ScreenCaptureKitConfiguration, m_configuration, int, maxWidth, setMaxWidth, "MaxWidth", "ScreenCaptureKitVncServer", 1920, Configuration::Property::Flag::Advanced ) \
++    OP( ScreenCaptureKitConfiguration, m_configuration, int, maxHeight, setMaxHeight, "MaxHeight", "ScreenCaptureKitVncServer", 1200, Configuration::Property::Flag::Advanced )
++
++DECLARE_CONFIG_PROXY( ScreenCaptureKitConfiguration, FOREACH_SCREENCAPTUREKIT_VNC_CONFIG_PROPERTY )
+diff --git a/plugins/vncserver/screencapturekit/ScreenCaptureKitVncServer.cpp b/plugins/vncserver/screencapturekit/ScreenCaptureKitVncServer.cpp
+new file mode 100644
+index 000000000..14c15c2a6
+--- /dev/null
++++ b/plugins/vncserver/screencapturekit/ScreenCaptureKitVncServer.cpp
+@@ -0,0 +1,283 @@
++/*
++ * ScreenCaptureKitVncServer.cpp - implementation of ScreenCaptureKitVncServer class
++ *
++ * Copyright (c) 2026 Veyon Community
++ *
++ * This file is part of Veyon - https://veyon.io
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program (see COPYING); if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 02111-1307, USA.
++ *
++ */
++
++extern "C" {
++#include "rfb/rfb.h"
++}
++
++#include <array>
++#include <cstdio>
++#include <cstring>
++
++#include <QImage>
++#include <QThread>
++
++#include "ScreenCaptureKitCapturer.h"
++#include "ScreenCaptureKitVncServer.h"
++#include "ScreenCaptureKitVncServerConfigurationWidget.h"
++#include "VeyonConfiguration.h"
++
++
++struct ScreenCaptureKitVncScreen
++{
++	~ScreenCaptureKitVncScreen()
++	{
++		delete[] passwords[0];
++	}
++
++	rfbScreenInfoPtr rfbScreen{nullptr};
++	std::array<char *, 2> passwords{};
++	QImage framebuffer;
++};
++
++
++ScreenCaptureKitVncServer::ScreenCaptureKitVncServer( QObject* parent ) :
++	QObject( parent ),
++	m_configuration( &VeyonCore::config() )
++{
++}
++
++
++
++ScreenCaptureKitVncServer::~ScreenCaptureKitVncServer()
++{
++	delete m_capturer;
++}
++
++
++
++QWidget* ScreenCaptureKitVncServer::configurationWidget()
++{
++	return new ScreenCaptureKitVncServerConfigurationWidget( m_configuration );
++}
++
++
++
++void ScreenCaptureKitVncServer::prepareServer()
++{
++}
++
++
++
++bool ScreenCaptureKitVncServer::runServer( int serverPort, const Password& password )
++{
++	if (VeyonCore::isDebugging())
++	{
++		rfbLog = rfbLogDebug;
++		rfbErr = rfbLogDebug;
++	}
++	else
++	{
++		rfbLog = rfbLogNone;
++		rfbErr = rfbLogNone;
++	}
++
++	ScreenCaptureKitVncScreen screen;
++
++	// The capture is started before the server is initialized, so that the
++	// size of the framebuffer is known before the first client connects.
++	m_capturer = new ScreenCaptureKitCapturer();
++
++	if( m_capturer->start( m_configuration.framesPerSecond(),
++						   m_configuration.captureAllDisplays(),
++						   m_configuration.displayIndex(),
++						   QSize( m_configuration.maxWidth(), m_configuration.maxHeight() ) ) == false )
++	{
++		vCritical() << "could not start the screen capture:" << m_capturer->lastError();
++		return false;
++	}
++
++	if( initScreen( &screen ) == false ||
++		initVncServer( serverPort, password, &screen ) == false )
++	{
++		m_capturer->stop();
++		return false;
++	}
++
++	while( true )
++	{
++		QThread::msleep( DefaultSleepTime );
++
++		updateFramebuffer( &screen );
++
++		rfbProcessEvents( screen.rfbScreen, 0 );
++	}
++
++	rfbShutdownServer( screen.rfbScreen, true );
++	rfbScreenCleanup( screen.rfbScreen );
++
++	return true;
++}
++
++
++
++bool ScreenCaptureKitVncServer::initScreen( ScreenCaptureKitVncScreen* screen )
++{
++	// The size of the framebuffer is taken from the capture, so that the
++	// framebuffer matches the resolution of the captured screen.
++	auto size = m_capturer != nullptr ? m_capturer->framebufferSize() : QSize();
++
++	if( size.isValid() && size.isEmpty() == false )
++	{
++		screen->framebuffer = QImage( size, QImage::Format_RGB32 );
++	}
++	else
++	{
++		// The capture has not delivered a frame yet, so a placeholder is
++		// used until the first frame arrives.
++		screen->framebuffer = QImage( DefaultFramebufferWidth, DefaultFramebufferHeight, QImage::Format_RGB32 );
++	}
++
++	screen->framebuffer.fill( Qt::black );
++
++	return true;
++}
++
++
++
++bool ScreenCaptureKitVncServer::initVncServer( int serverPort, const VncServerPluginInterface::Password& password,
++												ScreenCaptureKitVncScreen* screen )
++{
++	auto rfbScreen = rfbGetScreen( nullptr, nullptr,
++								   screen->framebuffer.width(), screen->framebuffer.height(),
++								   8, 3, 4 );
++
++	if( rfbScreen == nullptr )
++	{
++		return false;
++	}
++
++	screen->passwords[0] = qstrdup( password.toByteArray().constData() );
++
++	rfbScreen->desktopName = "VeyonVNC";
++	rfbScreen->frameBuffer = reinterpret_cast<char *>( screen->framebuffer.bits() );
++	rfbScreen->port = serverPort;
++	rfbScreen->ipv6port = serverPort;
++
++	rfbScreen->listenInterface = htonl(INADDR_LOOPBACK);
++	rfbScreen->listen6Interface = const_cast<char*>("::1");
++
++	rfbScreen->authPasswdData = screen->passwords.data();
++	rfbScreen->passwordCheck = rfbCheckPasswordByList;
++
++	rfbScreen->serverFormat.redShift = 16;
++	rfbScreen->serverFormat.greenShift = 8;
++	rfbScreen->serverFormat.blueShift = 0;
++
++	rfbScreen->serverFormat.redMax = 255;
++	rfbScreen->serverFormat.greenMax = 255;
++	rfbScreen->serverFormat.blueMax = 255;
++
++	rfbScreen->serverFormat.trueColour = true;
++	rfbScreen->serverFormat.bitsPerPixel = 32;
++
++	rfbScreen->alwaysShared = true;
++	rfbScreen->handleEventsEagerly = true;
++	rfbScreen->deferUpdateTime = 5;
++
++	rfbScreen->screenData = screen;
++
++	rfbScreen->cursor = nullptr;
++
++	rfbInitServer( rfbScreen );
++
++	rfbMarkRectAsModified( rfbScreen, 0, 0, rfbScreen->width, rfbScreen->height );
++
++	screen->rfbScreen = rfbScreen;
++
++	return true;
++}
++
++
++
++bool ScreenCaptureKitVncServer::updateFramebuffer( ScreenCaptureKitVncScreen* screen )
++{
++	if( m_capturer == nullptr || m_capturer->hasNewFrame() == false )
++	{
++		return false;
++	}
++
++	// The flag is reset, so that the same frame is not copied again.
++	m_capturer->resetNewFrame();
++
++	const auto frame = m_capturer->currentFrame();
++	if( frame.isNull() )
++	{
++		return false;
++	}
++
++	if( frame.size() != screen->framebuffer.size() )
++	{
++		// The resolution of the screen has changed, so the framebuffer and
++		// the libVNC screen have to be resized.
++		screen->framebuffer = QImage( frame.size(), QImage::Format_RGB32 );
++		screen->framebuffer.fill( Qt::black );
++
++		screen->rfbScreen->width = frame.width();
++		screen->rfbScreen->height = frame.height();
++		screen->rfbScreen->frameBuffer = reinterpret_cast<char *>( screen->framebuffer.bits() );
++
++		vInfo() << "framebuffer resized to" << frame.width() << "x" << frame.height();
++	}
++	else
++	{
++		// The frame is copied line by line, so that the address of the
++		// framebuffer stays the same.  libVNC keeps a pointer to it.
++		for( int line = 0; line < frame.height(); ++line )
++		{
++			std::memcpy( screen->framebuffer.scanLine( line ), frame.constScanLine( line ), frame.bytesPerLine() );
++		}
++	}
++
++	rfbMarkRectAsModified( screen->rfbScreen, 0, 0, screen->rfbScreen->width, screen->rfbScreen->height );
++
++	return true;
++}
++
++
++
++void ScreenCaptureKitVncServer::rfbLogDebug( const char* format, ... )
++{
++	va_list args;
++	va_start(args, format);
++
++	static constexpr int MaxMessageLength = 256;
++	std::array<char, MaxMessageLength> message;
++
++	std::vsnprintf(message.data(), message.size(), format, args); // Flawfinder: ignore
++
++	va_end(args);
++
++	vDebug() << message.data();
++}
++
++
++
++void ScreenCaptureKitVncServer::rfbLogNone( const char* format, ... )
++{
++	Q_UNUSED(format);
++}
++
++
++IMPLEMENT_CONFIG_PROXY(ScreenCaptureKitConfiguration)
+diff --git a/plugins/vncserver/screencapturekit/ScreenCaptureKitVncServer.h b/plugins/vncserver/screencapturekit/ScreenCaptureKitVncServer.h
+new file mode 100644
+index 000000000..f1b4eed77
+--- /dev/null
++++ b/plugins/vncserver/screencapturekit/ScreenCaptureKitVncServer.h
+@@ -0,0 +1,130 @@
++/*
++ * ScreenCaptureKitVncServer.h - declaration of ScreenCaptureKitVncServer class
++ *
++ * Copyright (c) 2026 Veyon Community
++ *
++ * This file is part of Veyon - https://veyon.io
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program (see COPYING); if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 02111-1307, USA.
++ *
++ */
++
++#pragma once
++
++#include "PluginInterface.h"
++#include "VncServerPluginInterface.h"
++#include "ScreenCaptureKitConfiguration.h"
++
++class ScreenCaptureKitCapturer;
++
++struct ScreenCaptureKitVncScreen;
++
++/*!
++ * \brief A VNC server that captures the screen using ScreenCaptureKit
++ *
++ * This is the native screen capture backend of macOS.  The captured
++ * frames are copied into a software framebuffer that is served by the
++ * regular libVNC server infrastructure.
++ */
++class ScreenCaptureKitVncServer : public QObject, VncServerPluginInterface, PluginInterface
++{
++	Q_OBJECT
++	Q_PLUGIN_METADATA(IID "io.veyon.Veyon.Plugins.ScreenCaptureKitVncServer")
++	Q_INTERFACES(PluginInterface VncServerPluginInterface)
++public:
++	explicit ScreenCaptureKitVncServer( QObject* parent = nullptr );
++	~ScreenCaptureKitVncServer() override;
++
++	Plugin::Uid uid() const override
++	{
++		return Plugin::Uid{ QStringLiteral("8b5e0d4c-1a3f-4f27-9c58-2f6ad3e0b7c4") };
++	}
++
++	QVersionNumber version() const override
++	{
++		return QVersionNumber( 1, 0 );
++	}
++
++	QString name() const override
++	{
++		return QStringLiteral( "ScreenCaptureKitVncServer" );
++	}
++
++	QString description() const override
++	{
++		return tr( "ScreenCaptureKit VNC server" );
++	}
++
++	QString vendor() const override
++	{
++		return QStringLiteral( "Veyon Community" );
++	}
++
++	QString copyright() const override
++	{
++		return QStringLiteral( "Veyon Community" );
++	}
++
++	Plugin::Flags flags() const override
++	{
++		// The ScreenCaptureKit backend is the native screen capture
++		// implementation of macOS, so it is the default one there.
++		return Plugin::ProvidesDefaultImplementation;
++	}
++
++	QStringList supportedSessionTypes() const override
++	{
++		return {};
++	}
++
++	QWidget* configurationWidget() override;
++
++	void prepareServer() override;
++
++	bool runServer( int serverPort, const Password& password ) override;
++
++	int configuredServerPort() override
++	{
++		return -1;
++	}
++
++	Password configuredPassword() override
++	{
++		return {};
++	}
++
++private:
++	static constexpr auto DefaultFramebufferWidth = 640;
++	static constexpr auto DefaultFramebufferHeight = 480;
++	static constexpr auto DefaultSleepTime = 25;
++
++	ScreenCaptureKitConfiguration m_configuration;
++	ScreenCaptureKitCapturer* m_capturer{nullptr};
++
++	bool initScreen( ScreenCaptureKitVncScreen* screen );
++	bool initVncServer( int serverPort, const VncServerPluginInterface::Password& password,
++						ScreenCaptureKitVncScreen* screen );
++
++	/*!
++	 * \brief Copies the captured frame into the framebuffer of the server
++	 *
++	 * \return True if a new frame has been copied
++	 */
++	bool updateFramebuffer( ScreenCaptureKitVncScreen* screen );
++
++	static void rfbLogDebug( const char* format, ... );
++	static void rfbLogNone( const char* format, ... );
++};
+diff --git a/plugins/vncserver/screencapturekit/ScreenCaptureKitVncServerConfigurationWidget.cpp b/plugins/vncserver/screencapturekit/ScreenCaptureKitVncServerConfigurationWidget.cpp
+new file mode 100644
+index 000000000..8141c5a81
+--- /dev/null
++++ b/plugins/vncserver/screencapturekit/ScreenCaptureKitVncServerConfigurationWidget.cpp
+@@ -0,0 +1,54 @@
++/*
++ * ScreenCaptureKitVncServerConfigurationWidget.cpp - implementation of the ScreenCaptureKitVncServerConfigurationWidget class
++ *
++ * Copyright (c) 2026 Veyon Community
++ *
++ * This file is part of Veyon - https://veyon.io
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program (see COPYING); if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 02111-1307, USA.
++ *
++ */
++
++#include "Configuration/UiMapping.h"
++#include "ScreenCaptureKitConfiguration.h"
++#include "ScreenCaptureKitVncServerConfigurationWidget.h"
++
++#include "ui_ScreenCaptureKitVncServerConfigurationWidget.h"
++
++ScreenCaptureKitVncServerConfigurationWidget::ScreenCaptureKitVncServerConfigurationWidget( ScreenCaptureKitConfiguration& configuration,
++																						  QWidget* parent ) :
++	QWidget( parent ),
++	ui( new Ui::ScreenCaptureKitVncServerConfigurationWidget ),
++	m_configuration( configuration )
++{
++	ui->setupUi( this );
++
++	FOREACH_SCREENCAPTUREKIT_VNC_CONFIG_PROPERTY( INIT_WIDGET_FROM_PROPERTY );
++	FOREACH_SCREENCAPTUREKIT_VNC_CONFIG_PROPERTY( CONNECT_WIDGET_TO_PROPERTY );
++
++	// The display index is only relevant when a single display is captured.
++	connect( ui->captureAllDisplays, &QCheckBox::toggled, this, [this]( bool checked ) {
++		ui->displayIndex->setEnabled( checked == false );
++	} );
++	ui->displayIndex->setEnabled( ui->captureAllDisplays->isChecked() == false );
++}
++
++
++
++ScreenCaptureKitVncServerConfigurationWidget::~ScreenCaptureKitVncServerConfigurationWidget()
++{
++	delete ui;
++}
+diff --git a/plugins/vncserver/screencapturekit/ScreenCaptureKitVncServerConfigurationWidget.h b/plugins/vncserver/screencapturekit/ScreenCaptureKitVncServerConfigurationWidget.h
+new file mode 100644
+index 000000000..411fe6644
+--- /dev/null
++++ b/plugins/vncserver/screencapturekit/ScreenCaptureKitVncServerConfigurationWidget.h
+@@ -0,0 +1,46 @@
++/*
++ * ScreenCaptureKitVncServerConfigurationWidget.h - header for the ScreenCaptureKitVncServerConfigurationWidget class
++ *
++ * Copyright (c) 2026 Veyon Community
++ *
++ * This file is part of Veyon - https://veyon.io
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program (see COPYING); if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 02111-1307, USA.
++ *
++ */
++
++#pragma once
++
++#include <QWidget>
++
++namespace Ui {
++class ScreenCaptureKitVncServerConfigurationWidget;
++}
++
++class ScreenCaptureKitConfiguration;
++
++class ScreenCaptureKitVncServerConfigurationWidget : public QWidget
++{
++	Q_OBJECT
++
++public:
++	explicit ScreenCaptureKitVncServerConfigurationWidget( ScreenCaptureKitConfiguration& configuration, QWidget* parent = nullptr );
++	~ScreenCaptureKitVncServerConfigurationWidget() override;
++
++private:
++	Ui::ScreenCaptureKitVncServerConfigurationWidget *ui;
++	ScreenCaptureKitConfiguration& m_configuration;
++};
+diff --git a/plugins/vncserver/screencapturekit/ScreenCaptureKitVncServerConfigurationWidget.ui b/plugins/vncserver/screencapturekit/ScreenCaptureKitVncServerConfigurationWidget.ui
+new file mode 100644
+index 000000000..2a2f2cbe2
+--- /dev/null
++++ b/plugins/vncserver/screencapturekit/ScreenCaptureKitVncServerConfigurationWidget.ui
+@@ -0,0 +1,122 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<ui version="4.0">
++ <class>ScreenCaptureKitVncServerConfigurationWidget</class>
++ <widget class="QWidget" name="ScreenCaptureKitVncServerConfigurationWidget">
++  <property name="windowTitle">
++   <string>ScreenCaptureKit VNC server configuration</string>
++  </property>
++  <layout class="QGridLayout" name="gridLayout">
++   <property name="leftMargin">
++    <number>0</number>
++   </property>
++   <property name="topMargin">
++    <number>0</number>
++   </property>
++   <property name="rightMargin">
++    <number>0</number>
++   </property>
++   <property name="bottomMargin">
++    <number>0</number>
++   </property>
++   <item row="0" column="0">
++    <widget class="QLabel" name="label_fps">
++     <property name="text">
++      <string>Frames per second:</string>
++     </property>
++    </widget>
++   </item>
++   <item row="0" column="1">
++    <widget class="QSpinBox" name="framesPerSecond">
++     <property name="minimum">
++      <number>1</number>
++     </property>
++     <property name="maximum">
++      <number>60</number>
++     </property>
++     <property name="value">
++      <number>15</number>
++     </property>
++    </widget>
++   </item>
++   <item row="1" column="0">
++    <widget class="QLabel" name="label_all_displays">
++     <property name="text">
++      <string>Capture all displays:</string>
++     </property>
++    </widget>
++   </item>
++   <item row="1" column="1">
++    <widget class="QCheckBox" name="captureAllDisplays">
++     <property name="text">
++      <string>Combine all monitors into a single image</string>
++     </property>
++     <property name="checked">
++      <bool>true</bool>
++     </property>
++    </widget>
++   </item>
++   <item row="2" column="0">
++    <widget class="QLabel" name="label_display_index">
++     <property name="text">
++      <string>Display index:</string>
++     </property>
++    </widget>
++   </item>
++   <item row="2" column="1">
++    <widget class="QSpinBox" name="displayIndex">
++     <property name="minimum">
++      <number>0</number>
++     </property>
++     <property name="maximum">
++      <number>15</number>
++     </property>
++     <property name="value">
++      <number>0</number>
++     </property>
++    </widget>
++   </item>
++   <item row="3" column="0">
++    <widget class="QLabel" name="label_max_width">
++     <property name="text">
++      <string>Maximum width:</string>
++     </property>
++    </widget>
++   </item>
++   <item row="3" column="1">
++    <widget class="QSpinBox" name="maxWidth">
++     <property name="minimum">
++      <number>320</number>
++     </property>
++     <property name="maximum">
++      <number>7680</number>
++     </property>
++     <property name="value">
++      <number>1920</number>
++     </property>
++    </widget>
++   </item>
++   <item row="4" column="0">
++    <widget class="QLabel" name="label_max_height">
++     <property name="text">
++      <string>Maximum height:</string>
++     </property>
++    </widget>
++   </item>
++   <item row="4" column="1">
++    <widget class="QSpinBox" name="maxHeight">
++     <property name="minimum">
++      <number>240</number>
++     </property>
++     <property name="maximum">
++      <number>4320</number>
++     </property>
++     <property name="value">
++      <number>1200</number>
++     </property>
++    </widget>
++   </item>
++  </layout>
++ </widget>
++ <resources/>
++ <connections/>
++</ui>
+diff --git a/Users/widemos/proyectos/veyon-kali/build/veyon/plugins/vncserver/CMakeLists.txt b/plugins/vncserver/CMakeLists.txt
+index 52f183537..81d6a4dd4 100644
+--- a/plugins/vncserver/CMakeLists.txt
++++ b/plugins/vncserver/CMakeLists.txt
+@@ -7,5 +7,9 @@ if(VEYON_BUILD_LINUX)
+ 	add_subdirectory(pipewire)
+ endif()
+ 
++if(APPLE)
++	add_subdirectory(screencapturekit)
++endif()
++
+ add_subdirectory(external)
+ add_subdirectory(headless)
+diff --git a/Users/widemos/proyectos/veyon-kali/build/veyon/plugins/vncserver/headless/HeadlessVncServer.h b/plugins/vncserver/headless/HeadlessVncServer.h
+index 2676f13ca..3ac7fe17f 100644
+--- a/plugins/vncserver/headless/HeadlessVncServer.h
++++ b/plugins/vncserver/headless/HeadlessVncServer.h
+@@ -70,7 +70,12 @@ public:
+ 
+ 	Plugin::Flags flags() const override
+ 	{
+-		return Plugin::NoFlags;
++		// The headless VNC server drives a software framebuffer, so it is
++		// the portable fallback for platforms that have no native screen
++		// capture backend.  It stays the default implementation on macOS as
++		// well, because a native backend such as ScreenCaptureKit requires
++		// an active display that is not available on headless machines.
++		return Plugin::ProvidesDefaultImplementation;
+ 	}
+ 
+ 	virtual QStringList supportedSessionTypes() const override

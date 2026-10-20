@@ -1,0 +1,114 @@
+diff --git a/core/src/Plugin.h b/core/src/Plugin.h
+--- a/core/src/Plugin.h
++++ b/core/src/Plugin.h
+@@ -39,6 +39,11 @@
+ 		NoFlags,
+ 		ProvidesDefaultImplementation = 0x0001,
+ 		RequiresLicensing = 0x002,
++		// Marks an implementation that is preferred over the other default
++		// implementations.  It is only meaningful in combination with
++		// ProvidesDefaultImplementation and is used to select a native
++		// backend while keeping the portable one as a fallback.
++		PreferredDefaultImplementation = 0x0004,
+ 	} ;
+ 
+ 	Q_DECLARE_FLAGS(Flags, PluginFlags)
+diff --git a/server/src/VncServer.h b/server/src/VncServer.h
+--- a/server/src/VncServer.h
++++ b/server/src/VncServer.h
+@@ -31,6 +31,8 @@
+ 
+ class VncServerPluginInterface;
+ 
++using VncServerPluginInterfaceList = QList<VncServerPluginInterface *>;
++
+ class VncServer : public QThread
+ {
+ 	Q_OBJECT
+@@ -51,5 +53,6 @@
+ 	void run() override;
+ 
+ 	VncServerPluginInterface* m_pluginInterface;
++	VncServerPluginInterfaceList m_fallbackPluginInterfaces;
+ 
+ } ;
+diff --git a/server/src/VncServer.cpp b/server/src/VncServer.cpp
+--- a/server/src/VncServer.cpp
++++ b/server/src/VncServer.cpp
+@@ -45,6 +45,7 @@
+ 				CryptoCore::generateChallenge().toBase64().left( MAXPWLEN ) );
+ 
+ 	VncServerPluginInterfaceList defaultVncServerPlugins;
++	VncServerPluginInterfaceList preferredVncServerPlugins;
+ 
+ 	for( auto pluginObject : std::as_const( VeyonCore::pluginManager().pluginObjects() ) )
+ 	{
+@@ -67,15 +68,30 @@
+ 			}
+ 			else if( pluginInterface->flags().testFlag( Plugin::ProvidesDefaultImplementation ) )
+ 			{
+-				defaultVncServerPlugins.append( vncServerPluginInterface ); // clazy:exclude=reserve-candidates
++				if( pluginInterface->flags().testFlag( Plugin::PreferredDefaultImplementation ) )
++				{
++					preferredVncServerPlugins.append( vncServerPluginInterface ); // clazy:exclude=reserve-candidates
++				}
++				else
++				{
++					defaultVncServerPlugins.append( vncServerPluginInterface ); // clazy:exclude=reserve-candidates
++				}
+ 			}
+ 		}
+ 	}
+ 
+ 	if( m_pluginInterface == nullptr )
+ 	{
+-		if( defaultVncServerPlugins.isEmpty() )
++		// A preferred implementation is used before the portable ones, but
++		// it is only selected when it provides a default implementation as
++		// well.
++		if( preferredVncServerPlugins.isEmpty() == false )
+ 		{
++			m_pluginInterface = preferredVncServerPlugins.first();
++			defaultVncServerPlugins.prepend( m_pluginInterface );
++		}
++		else if( defaultVncServerPlugins.isEmpty() )
++		{
+ 			vCritical() << "no VNC server plugins found!";
+ 		}
+ 		else
+@@ -83,6 +99,13 @@
+ 			m_pluginInterface = defaultVncServerPlugins.first();
+ 		}
+ 	}
++
++	// The remaining default implementations are kept as fallbacks.  They are
++	// used when the preferred implementation is not able to run, for example
++	// when a native screen capture backend requires an active display that
++	// is not available on a headless machine.
++	m_fallbackPluginInterfaces = defaultVncServerPlugins;
++	m_fallbackPluginInterfaces.removeAll( m_pluginInterface );
+ }
+ 
+ 
+@@ -157,6 +180,21 @@
+ 		if( m_pluginInterface->runServer( serverPort(), password() ) == false )
+ 		{
+ 			vCritical() << "An error occurred while running the VNC server plugin";
++
++			// The preferred implementation could not be started, so the
++			// remaining ones are tried as a fallback.
++			for( auto fallbackPluginInterface : std::as_const( m_fallbackPluginInterfaces ) )
++			{
++				vInfo() << "trying fallback VNC server plugin";
++
++				if( fallbackPluginInterface->runServer( serverPort(), password() ) )
++				{
++					vInfo() << "fallback VNC server plugin is running";
++					return;
++				}
++
++				vCritical() << "fallback VNC server plugin failed to start";
++			}
+ 		}
+ 
+ 		vDebug() << "finished";
