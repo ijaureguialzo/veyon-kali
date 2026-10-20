@@ -168,6 +168,12 @@ for plugin_dir in "$BUILD_DIR"/plugins/platform/*/; do
     [ -d "$plugin_dir" ] || continue
     find "$plugin_dir" -maxdepth 1 -name "*.so" -exec cp {} "$STAGE_DIR/PlugIns/" \; 2>/dev/null || true
 done
+# Algunos grupos de plugins tienen un tercer nivel (servidores VNC, backends
+# LDAP y backends de la Web API).
+for plugin_dir in "$BUILD_DIR"/plugins/vncserver/*/ "$BUILD_DIR"/plugins/ldap/*/ "$BUILD_DIR"/plugins/webapi/*/; do
+    [ -d "$plugin_dir" ] || continue
+    find "$plugin_dir" -maxdepth 1 -name "*.so" -exec cp {} "$STAGE_DIR/PlugIns/" \; 2>/dev/null || true
+done
 cp "$BUILD_DIR/plugins/ldap/kldap/libkldap-light.dylib" "$STAGE_DIR/PlugIns/" 2>/dev/null || true
 
 # Aplicar el rpath relativo del bundle a los ejecutables del stage.

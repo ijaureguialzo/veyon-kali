@@ -1,9 +1,9 @@
 diff --git a/plugins/platform/macos/CMakeLists.txt b/plugins/platform/macos/CMakeLists.txt
 new file mode 100644
-index 000000000..2e831dd00
+index 000000000..693c937ff
 --- /dev/null
 +++ b/plugins/platform/macos/CMakeLists.txt
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,62 @@
 +include(BuildVeyonPlugin)
 +
 +build_veyon_plugin(macos-platform
@@ -15,6 +15,8 @@ index 000000000..2e831dd00
 +	MacOSInputDeviceFunctions.cpp
 +	MacOSKeyboardShortcutTrapper.cpp
 +	MacOSNetworkFunctions.cpp
++	MacOSServerProcess.cpp
++	MacOSServiceCore.cpp
 +	MacOSServiceFunctions.cpp
 +	MacOSSessionFunctions.cpp
 +	MacOSUserFunctions.cpp
@@ -24,9 +26,15 @@ index 000000000..2e831dd00
 +	MacOSInputDeviceFunctions.h
 +	MacOSKeyboardShortcutTrapper.h
 +	MacOSNetworkFunctions.h
++	MacOSServerProcess.h
++	MacOSServiceCore.h
 +	MacOSServiceFunctions.h
 +	MacOSSessionFunctions.h
 +	MacOSUserFunctions.h
++	../common/PlatformSessionManager.h
++	../common/PlatformSessionManager.cpp
++	../common/ServiceDataManager.h
++	../common/ServiceDataManager.cpp
 +)
 +
 +# The plugin uses a couple of Objective-C++ source files (AppKit, Foundation
@@ -54,6 +62,10 @@ index 000000000..2e831dd00
 +	"-framework CoreGraphics"
 +	"-framework IOKit"
 +)
++
++# The service core uses the session manager and the service data manager,
++# which are shared between the platform plugins.
++target_include_directories(macos-platform PRIVATE ../common)
 diff --git a/plugins/platform/macos/MacOSCoreFunctions.cpp b/plugins/platform/macos/MacOSCoreFunctions.cpp
 new file mode 100644
 index 000000000..d719e485b
@@ -1495,12 +1507,767 @@ index 000000000..93af4cec3
 +	MacOSUserFunctions m_macOSUserFunctions{};
 +
 +};
+diff --git a/plugins/platform/macos/MacOSServerProcess.cpp b/plugins/platform/macos/MacOSServerProcess.cpp
+new file mode 100644
+index 000000000..8a510a5f4
+--- /dev/null
++++ b/plugins/platform/macos/MacOSServerProcess.cpp
+@@ -0,0 +1,176 @@
++/*
++ * MacOSServerProcess.cpp - implementation of MacOSServerProcess class
++ *
++ * Copyright (c) 2026 Veyon Community
++ *
++ * This file is part of Veyon - https://veyon.io
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program (see COPYING); if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 02111-1307, USA.
++ *
++ */
++
++#include <unistd.h>
++
++#include <QDir>
++#include <QFileInfo>
++#include <QProcess>
++
++#include "MacOSServerProcess.h"
++#include "VeyonCore.h"
++
++
++
++MacOSServerProcess::MacOSServerProcess( const QProcessEnvironment& processEnvironment,
++										const QString& userName,
++										int userId,
++										const QString& serverPath,
++										QObject* parent ) :
++	QObject( parent ),
++	m_userName( userName ),
++	m_userId( userId ),
++	m_serverPath( serverPath )
++{
++	// The process environment is only used as a template: the actual
++	// environment of the server is taken from the user's session by
++	// launchd, so that the server runs with the same environment as the
++	// applications of the user.
++	Q_UNUSED( processEnvironment )
++}
++
++
++
++MacOSServerProcess::~MacOSServerProcess()
++{
++	stop();
++}
++
++
++
++QString MacOSServerProcess::launchAgentLabel()
++{
++	return QStringLiteral( "io.veyon.veyon-server" );
++}
++
++
++
++QString MacOSServerProcess::launchAgentPath( const QString& userName )
++{
++	// The launch agent has to be placed in the LaunchAgents directory of
++	// the user, so that launchd loads it into the GUI domain of that user
++	// when the session starts.
++	return QStringLiteral( "/Users/%1/Library/LaunchAgents/%2.plist" )
++			.arg( userName, launchAgentLabel() );
++}
++
++
++
++void MacOSServerProcess::start()
++{
++	if( m_userId <= 0 )
++	{
++		vCritical() << "cannot start server for user" << m_userName << "- invalid user id";
++		return;
++	}
++
++	if( QFileInfo::exists( m_serverPath ) == false )
++	{
++		vCritical() << "cannot start server - executable not found:" << m_serverPath;
++		return;
++	}
++
++	// The launch agent has to exist before it can be bootstrapped.
++	if( QFileInfo::exists( launchAgentPath( m_userName ) ) == false )
++	{
++		vWarning() << "no launch agent for user" << m_userName
++				   << "- server cannot be started";
++		return;
++	}
++
++	// The server is started by launchd, not by the service: the agent is
++	// bootstrapped into the GUI session domain of the user, which is
++	// required to access the window server of that session.
++	//
++	// "launchctl asuser" switches to the bootstrap namespace of the given
++	// user, but it only works with root privileges.  Without them the
++	// bootstrap is attempted directly, which succeeds when the service
++	// already runs inside the GUI session of that user.
++	const auto domain = QStringLiteral( "gui/%1" ).arg( m_userId );
++
++	QStringList arguments;
++	if( geteuid() == 0 )
++	{
++		arguments << QStringLiteral( "asuser" ) << QString::number( m_userId )
++				  << QStringLiteral( "/bin/launchctl" );
++	}
++	arguments << QStringLiteral( "bootstrap" ) << domain << launchAgentPath( m_userName );
++
++	QProcess process;
++	process.start( QStringLiteral( "/bin/launchctl" ), arguments );
++	if( process.waitForStarted( LaunchctlTimeout ) == false )
++	{
++		vCritical() << "could not start launch agent for user" << m_userName
++					<< ":" << process.errorString();
++		return;
++	}
++	process.waitForFinished( LaunchctlTimeout );
++
++	if( process.exitCode() != 0 )
++	{
++		vWarning() << "could not bootstrap launch agent for user" << m_userName
++				   << ":" << QString::fromUtf8( process.readAllStandardError() ).trimmed();
++	}
++}
++
++
++
++void MacOSServerProcess::stop()
++{
++	// Unloading the agent stops the server with a SIGTERM and prevents
++	// launchd from starting it again.
++	QProcess process;
++	process.start( QStringLiteral( "/bin/launchctl" ),
++				  { QStringLiteral( "bootout" ),
++					QStringLiteral( "gui/%1" ).arg( m_userId ),
++					launchAgentPath( m_userName ) } );
++	if( process.waitForStarted( LaunchctlTimeout ) == false )
++	{
++		return;
++	}
++	process.waitForFinished( LaunchctlTimeout );
++}
++
++
++
++bool MacOSServerProcess::isRunning() const
++{
++	QProcess process;
++	process.start( QStringLiteral( "/bin/launchctl" ),
++				  { QStringLiteral( "print" ),
++					QStringLiteral( "gui/%1/%2" ).arg( m_userId ).arg( launchAgentLabel() ) } );
++	if( process.waitForStarted( LaunchctlTimeout ) == false )
++	{
++		return false;
++	}
++	process.waitForFinished( LaunchctlTimeout );
++
++	if( process.exitCode() != 0 )
++	{
++		return false;
++	}
++
++	return QString::fromUtf8( process.readAllStandardOutput() )
++			.contains( QLatin1String( "state = running" ) );
++}
+diff --git a/plugins/platform/macos/MacOSServerProcess.h b/plugins/platform/macos/MacOSServerProcess.h
+new file mode 100644
+index 000000000..39f6ab206
+--- /dev/null
++++ b/plugins/platform/macos/MacOSServerProcess.h
+@@ -0,0 +1,89 @@
++/*
++ * MacOSServerProcess.h - declaration of MacOSServerProcess class
++ *
++ * Copyright (c) 2026 Veyon Community
++ *
++ * This file is part of Veyon - https://veyon.io
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program (see COPYING); if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 02111-1307, USA.
++ *
++ */
++
++#pragma once
++
++#include <QProcess>
++#include <QProcessEnvironment>
++#include <QString>
++
++// clazy:excludeall=copyable-polymorphic
++
++/*!
++ * \brief Supervises a Veyon server instance on macOS
++ *
++ * The server itself is not started as a child process of the service.
++ * Instead it is run by launchd as a LaunchAgent inside the GUI session of
++ * the user, which is required to access the window server of that
++ * session.  This class therefore only supervises the launchd job: it
++ * queries the state of the job and it stops it when the service is
++ * shut down.
++ */
++class MacOSServerProcess : public QObject
++{
++	Q_OBJECT
++public:
++	MacOSServerProcess( const QProcessEnvironment& processEnvironment,
++						const QString& userName,
++						int userId,
++						const QString& serverPath,
++						QObject* parent = nullptr );
++	~MacOSServerProcess() override;
++
++	/*!
++	 * \brief Starts the launch agent of the user
++	 *
++	 * The agent is bootstrapped into the GUI domain of the user, so that
++	 * the server runs inside the graphical session.
++	 */
++	void start();
++
++	/*!
++	 * \brief Stops the launch agent of the user
++	 */
++	void stop();
++
++	/*!
++	 * \brief Returns whether the launch agent of the user is running
++	 */
++	bool isRunning() const;
++
++	/*!
++	 * \brief Returns the path of the launch agent of the given user
++	 */
++	static QString launchAgentPath( const QString& userName );
++
++	/*!
++	 * \brief Returns the label of the launch agent of the user
++	 */
++	static QString launchAgentLabel();
++
++private:
++	static constexpr auto LaunchctlTimeout = 10000;
++	static constexpr auto ServerTerminateTimeout = 2000;
++
++	const QString m_userName;
++	const int m_userId;
++	const QString m_serverPath;
++};
+diff --git a/plugins/platform/macos/MacOSServiceCore.cpp b/plugins/platform/macos/MacOSServiceCore.cpp
+new file mode 100644
+index 000000000..2009f8a32
+--- /dev/null
++++ b/plugins/platform/macos/MacOSServiceCore.cpp
+@@ -0,0 +1,353 @@
++/*
++ * MacOSServiceCore.cpp - implementation of MacOSServiceCore class
++ *
++ * Copyright (c) 2026 Veyon Community
++ *
++ * This file is part of Veyon - https://veyon.io
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program (see COPYING); if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 02111-1307, USA.
++ *
++ */
++
++#include <pwd.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#include <QCoreApplication>
++#include <QDir>
++#include <QEventLoop>
++#include <QFile>
++#include <QFileInfo>
++#include <QProcess>
++#include <QTimer>
++
++#include "MacOSServerProcess.h"
++#include "MacOSServiceCore.h"
++#include "VeyonCore.h"
++
++namespace {
++
++// The label of the launch agent that runs the Veyon server inside the
++// session of a user.
++QString launchAgentLabel()
++{
++	return QStringLiteral( "io.veyon.veyon-server" );
++}
++
++// Returns the path of the Veyon server executable that is installed
++// alongside the running service.
++QString serverExecutablePath()
++{
++	return QCoreApplication::applicationDirPath() + QDir::separator() +
++		   QStringLiteral( "veyon-server" );
++}
++
++} // namespace
++
++
++
++MacOSServiceCore::MacOSServiceCore( QObject* parent ) :
++	QObject( parent )
++{
++}
++
++
++
++MacOSServiceCore::~MacOSServiceCore()
++{
++	stopAllServers();
++}
++
++
++
++void MacOSServiceCore::run()
++{
++	// The service runs until it is terminated by launchd.  In the meantime
++	// it watches the console session and keeps a Veyon server running for
++	// the user that is logged in at the console.
++	vInfo() << "starting service core";
++
++	QEventLoop loop;
++
++	auto timer = new QTimer( this );
++	timer->setInterval( SessionProbingInterval );
++	connect( timer, &QTimer::timeout, this, &MacOSServiceCore::checkConsoleSession );
++	timer->start();
++
++	checkConsoleSession();
++
++	loop.exec();
++}
++
++
++
++QString MacOSServiceCore::consoleUserName()
++{
++	// The owner of /dev/console is the user that is logged in at the
++	// graphical console.  This is the same mechanism that the loginwindow
++	// uses, and unlike the dynamic store it does not require any
++	// additional framework.
++	struct stat consoleStat {};
++	if( ::stat( "/dev/console", &consoleStat ) != 0 )
++	{
++		return {};
++	}
++
++	if( consoleStat.st_uid == 0 )
++	{
++		// No user is logged in at the console.
++		return {};
++	}
++
++	const auto* passwdEntry = ::getpwuid( consoleStat.st_uid );
++	if( passwdEntry == nullptr )
++	{
++		return {};
++	}
++
++	return QString::fromUtf8( passwdEntry->pw_name );
++}
++
++
++
++QString MacOSServiceCore::userHomeDirectory( const QString& userName )
++{
++	const auto* passwdEntry = ::getpwnam( userName.toUtf8().constData() );
++	if( passwdEntry == nullptr )
++	{
++		return {};
++	}
++
++	return QString::fromUtf8( passwdEntry->pw_dir );
++}
++
++
++
++int MacOSServiceCore::userId( const QString& userName )
++{
++	const auto* passwdEntry = ::getpwnam( userName.toUtf8().constData() );
++	if( passwdEntry == nullptr )
++	{
++		return -1;
++	}
++
++	return static_cast<int>( passwdEntry->pw_uid );
++}
++
++
++
++void MacOSServiceCore::checkConsoleSession()
++{
++	const auto userName = consoleUserName();
++
++	if( userName.isEmpty() )
++	{
++		// Nobody is logged in at the console, so the servers of the
++		// previous session have to be stopped.
++		if( m_serverProcesses.isEmpty() == false )
++		{
++			vInfo() << "no user logged in at the console - stopping all servers";
++			stopAllServers();
++		}
++		return;
++	}
++
++	if( m_serverProcesses.contains( userName ) )
++	{
++		// The server is already running for this user, but it may have
++		// died in the meantime.
++		const auto serverProcess = m_serverProcesses.value( userName );
++		if( serverProcess->isRunning() == false )
++		{
++			vWarning() << "server for user" << userName << "is not running - restarting it";
++			serverProcess->deleteLater();
++			m_serverProcesses.remove( userName );
++			startServer( userName );
++		}
++		return;
++	}
++
++	startServer( userName );
++}
++
++
++
++void MacOSServiceCore::startServer( const QString& userName )
++{
++	const auto uid = userId( userName );
++	if( uid <= 0 )
++	{
++		vCritical() << "cannot start server for user" << userName << "- user not found";
++		return;
++	}
++
++	if( writeLaunchAgent( userName ) == false )
++	{
++		vCritical() << "cannot write launch agent for user" << userName;
++		return;
++	}
++
++	const auto serverPath = serverExecutablePath();
++	if( QFileInfo::exists( serverPath ) == false )
++	{
++		vCritical() << "cannot start server - executable not found:" << serverPath;
++		return;
++	}
++
++	vInfo() << "starting server for user" << userName << "at seat" << uid;
++
++	// The token of the service data manager is passed to the server so
++	// that it can exchange data with the service.
++	QProcessEnvironment serverEnvironment = QProcessEnvironment::systemEnvironment();
++	serverEnvironment.insert( QString::fromLatin1( ServiceDataManager::serviceDataTokenEnvironmentVariable() ),
++							  QString::fromUtf8( m_dataManager.token().toByteArray() ) );
++
++	auto serverProcess = new MacOSServerProcess( serverEnvironment, userName, uid, serverPath, this );
++	serverProcess->start();
++
++	m_serverProcesses[userName] = serverProcess;
++}
++
++
++
++void MacOSServiceCore::checkServerState( const QString& userName )
++{
++	const auto serverProcess = m_serverProcesses.value( userName );
++	if( serverProcess && serverProcess->isRunning() == false )
++	{
++		vWarning() << "server for user" << userName << "stopped unexpectedly";
++	}
++}
++
++
++
++void MacOSServiceCore::stopServer( const QString& userName )
++{
++	if( m_serverProcesses.contains( userName ) == false )
++	{
++		return;
++	}
++
++	vInfo() << "stopping server for user" << userName;
++
++	auto serverProcess = m_serverProcesses.value( userName );
++	serverProcess->stop();
++	serverProcess->deleteLater();
++
++	m_serverProcesses.remove( userName );
++
++	removeLaunchAgent( userName );
++}
++
++
++
++void MacOSServiceCore::stopAllServers()
++{
++	while( m_serverProcesses.isEmpty() == false )
++	{
++		stopServer( m_serverProcesses.firstKey() );
++	}
++}
++
++
++
++bool MacOSServiceCore::writeLaunchAgent( const QString& userName ) const
++{
++	const auto homeDirectory = userHomeDirectory( userName );
++	if( homeDirectory.isEmpty() )
++	{
++		return false;
++	}
++
++	const auto launchAgentsDirectory = homeDirectory + QStringLiteral( "/Library/LaunchAgents" );
++
++	// The directory may not exist yet on a freshly created account.
++	QDir().mkpath( launchAgentsDirectory );
++
++	const auto plistPath = launchAgentsDirectory + QStringLiteral( "/io.veyon.veyon-server.plist" );
++	const auto serverPath = serverExecutablePath();
++
++	QString plist;
++	plist += QStringLiteral( "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" );
++	plist += QStringLiteral( "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
++							 "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n" );
++	plist += QStringLiteral( "<plist version=\"1.0\">\n<dict>\n" );
++	plist += QStringLiteral( "\t<key>Label</key>\n\t<string>%1</string>\n" ).arg( launchAgentLabel() );
++	plist += QStringLiteral( "\t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>%1</string>\n\t</array>\n" ).arg( serverPath );
++	plist += QStringLiteral( "\t<key>RunAtLoad</key>\n\t<true/>\n" );
++	plist += QStringLiteral( "\t<key>KeepAlive</key>\n\t<true/>\n" );
++	plist += QStringLiteral( "\t<key>ProcessType</key>\n\t<string>Interactive</string>\n" );
++	plist += QStringLiteral( "\t<key>LimitLoadToSessionType</key>\n\t<string>Aqua</string>\n" );
++	plist += QStringLiteral( "\t<key>ServiceDescription</key>\n\t<string>Veyon Server</string>\n" );
++	plist += QStringLiteral( "</dict>\n</plist>\n" );
++
++	QFile plistFile( plistPath );
++	if( plistFile.open( QIODevice::WriteOnly | QIODevice::Truncate ) == false )
++	{
++		vCritical() << "could not write launch agent:" << plistPath;
++		return false;
++	}
++	plistFile.write( plist.toUtf8() );
++	plistFile.close();
++
++	// The launch agent has to be owned by the user it belongs to.
++	if( geteuid() == 0 )
++	{
++		const auto uid = userId( userName );
++		if( uid > 0 )
++		{
++			::chown( plistPath.toUtf8().constData(), uid, uid );
++		}
++	}
++
++	// Make sure that the property list is syntactically valid.
++	QProcess process;
++	process.start( QStringLiteral( "/usr/bin/plutil" ),
++				  { QStringLiteral( "-lint" ), plistPath } );
++	if( process.waitForStarted( 5000 ) == false )
++	{
++		return false;
++	}
++	process.waitForFinished( 5000 );
++	if( process.exitCode() != 0 )
++	{
++		vCritical() << "invalid launch agent for user" << userName;
++		return false;
++	}
++
++	return true;
++}
++
++
++
++void MacOSServiceCore::removeLaunchAgent( const QString& userName ) const
++{
++	const auto uid = userId( userName );
++	const auto plistPath = MacOSServerProcess::launchAgentPath( userName );
++
++	if( uid > 0 )
++	{
++		QProcess bootout;
++		bootout.start( QStringLiteral( "/bin/launchctl" ),
++					  { QStringLiteral( "bootout" ),
++						QStringLiteral( "gui/%1" ).arg( uid ),
++						plistPath } );
++		bootout.waitForStarted( 5000 );
++		bootout.waitForFinished( 5000 );
++	}
++
++	QFile::remove( plistPath );
++}
+diff --git a/plugins/platform/macos/MacOSServiceCore.h b/plugins/platform/macos/MacOSServiceCore.h
+new file mode 100644
+index 000000000..bb3868816
+--- /dev/null
++++ b/plugins/platform/macos/MacOSServiceCore.h
+@@ -0,0 +1,113 @@
++/*
++ * MacOSServiceCore.h - declaration of MacOSServiceCore class
++ *
++ * Copyright (c) 2026 Veyon Community
++ *
++ * This file is part of Veyon - https://veyon.io
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program (see COPYING); if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 02111-1307, USA.
++ *
++ */
++
++#pragma once
++
++#include <QMap>
++#include <QString>
++#include <QTimer>
++
++#include "PlatformSessionManager.h"
++#include "ServiceDataManager.h"
++
++// clazy:excludeall=copyable-polymorphic
++
++/*!
++ * \brief Manages the Veyon server instances on macOS
++ *
++ * On macOS a system-wide daemon cannot access the graphical session of a
++ * user, so the Veyon server has to be started inside the Aqua session of
++ * the logged on user.  This class implements the usual two-tier model:
++ *
++ * - The service itself runs as a LaunchDaemon and watches for the user
++ *   that owns the current console session.
++ * - For every such user a LaunchAgent is bootstrapped into the GUI
++ *   session domain, which runs the actual Veyon server.
++ *
++ * The LaunchAgent is what makes the server able to capture the screen
++ * and to inject keyboard input, as those require access to the window
++ * server of the user's session.
++ */
++class MacOSServiceCore : public QObject
++{
++	Q_OBJECT
++public:
++	explicit MacOSServiceCore( QObject* parent = nullptr );
++	~MacOSServiceCore() override;
++
++	void run();
++
++private Q_SLOTS:
++	void checkConsoleSession();
++
++private:
++	static constexpr auto SessionProbingInterval = 3000;
++	static constexpr auto ServerRestartInterval = 5000;
++
++	/*!
++	 * \brief Returns the name of the user owning the current console session
++	 *
++	 * An empty string is returned if no user is logged in at the console
++	 * or if the session is not a local graphical one.
++	 */
++	static QString consoleUserName();
++
++	/*!
++	 * \brief Returns the home directory of the given user
++	 */
++	static QString userHomeDirectory( const QString& userName );
++
++	/*!
++	 * \brief Returns the UID of the given user, or -1 if it cannot be resolved
++	 */
++	static int userId( const QString& userName );
++
++	void startServer( const QString& userName );
++	void stopServer( const QString& userName );
++	void stopAllServers();
++
++	/*!
++	 * \brief Checks whether the server of the given user is still alive
++	 */
++	void checkServerState( const QString& userName );
++
++	/*!
++	 * \brief Writes the launch agent property list of the given user
++	 *
++	 * The property list is written to the LaunchAgents directory of the
++	 * user, because the agent has to be loaded into the GUI session
++	 * domain of that user.
++	 */
++	bool writeLaunchAgent( const QString& userName ) const;
++
++	/*!
++	 * \brief Removes the launch agent of the given user
++	 */
++	void removeLaunchAgent( const QString& userName ) const;
++
++	ServiceDataManager m_dataManager{};
++	PlatformSessionManager m_sessionManager{};
++
++	QMap<QString, MacOSServerProcess*> m_serverProcesses;
++};
 diff --git a/plugins/platform/macos/MacOSServiceFunctions.cpp b/plugins/platform/macos/MacOSServiceFunctions.cpp
 new file mode 100644
-index 000000000..8627b97fe
+index 000000000..6f28bf9bb
 --- /dev/null
 +++ b/plugins/platform/macos/MacOSServiceFunctions.cpp
-@@ -0,0 +1,340 @@
+@@ -0,0 +1,344 @@
 +/*
 + * MacOSServiceFunctions.cpp - implementation of MacOSServiceFunctions class
 + *
@@ -1829,6 +2596,7 @@ index 000000000..8627b97fe
 +{
 +	// When running as a launchd service the entry point is invoked directly,
 +	// as the service process is the launchd job itself.
++	vInfo() << "running as service:" << name;
 +	Q_UNUSED( name )
 +	serviceEntryPoint();
 +	return true;
@@ -1838,8 +2606,11 @@ index 000000000..8627b97fe
 +
 +void MacOSServiceFunctions::manageServerInstances()
 +{
-+	// Server instances are managed by launchd on macOS; each instance is a
-+	// separate launchd job.  Nothing to do here.
++	// The servers are managed by launchd: this service watches the console
++	// session and keeps a Veyon server running for the user that is logged
++	// in at the console.
++	MacOSServiceCore serviceCore;
++	serviceCore.run();
 +}
 diff --git a/plugins/platform/macos/MacOSServiceFunctions.h b/plugins/platform/macos/MacOSServiceFunctions.h
 new file mode 100644

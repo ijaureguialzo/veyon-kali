@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 3b0234aaf..0108c44db 100644
+index 3b0234aaf..8a1838d34 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -137,6 +137,11 @@ else()
@@ -47,7 +47,7 @@ index 3b0234aaf..0108c44db 100644
  
  
  include(cmake/CPackDefinitions.cmake)
-@@ -388,3 +417,63 @@ if(VEYON_BUILD_ANDROID)
+@@ -388,3 +417,64 @@ if(VEYON_BUILD_ANDROID)
  
  	add_dependencies(create-apk-veyon-master prepare-apk)
  endif()
@@ -71,6 +71,7 @@ index 3b0234aaf..0108c44db 100644
 +			"$<TARGET_FILE:veyon-cli>"
 +			"$<TARGET_FILE:veyon-configurator>"
 +			"$<TARGET_FILE:veyon-server>"
++			"$<TARGET_FILE:veyon-service>"
 +			"${CMAKE_BINARY_DIR}/${MACOS_BUNDLE_NAME}.app/Contents/MacOS"
 +		COMMAND ${CMAKE_COMMAND} -E copy
 +			"$<TARGET_FILE:veyon-core>"
@@ -92,7 +93,7 @@ index 3b0234aaf..0108c44db 100644
 +		VERBATIM
 +		)
 +
-+	add_dependencies(macos_bundle veyon-master veyon-cli veyon-configurator veyon-server veyon-core macos-platform)
++	add_dependencies(macos_bundle veyon-master veyon-cli veyon-configurator veyon-server veyon-service veyon-core macos-platform)
 +
 +	# The plugins are loaded by the executables, so they need a runpath that
 +	# points to the core library and to the frameworks of the bundle.

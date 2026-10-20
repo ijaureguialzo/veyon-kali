@@ -1,9 +1,9 @@
 diff --git a/cmake/modules/CopyPluginsToBundle.cmake b/cmake/modules/CopyPluginsToBundle.cmake
 new file mode 100644
-index 000000000..8ef4baecf
+index 000000000..b7d973ba6
 --- /dev/null
 +++ b/cmake/modules/CopyPluginsToBundle.cmake
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,48 @@
 +# CopyPluginsToBundle.cmake - Copy the built Veyon plugins into the macOS bundle.
 +#
 +# Invoked in script mode with:
@@ -20,8 +20,12 @@ index 000000000..8ef4baecf
 +endif()
 +
 +# The plugins are built in "<plugins>/<plugin>/" and the platform plugins in
-+# "<plugins>/platform/<platform>/", so both levels are scanned.
-+file(GLOB plugin_dirs "${PLUGINS_DIR}/*" "${PLUGINS_DIR}/platform/*")
++# "<plugins>/platform/<platform>/".  Some plugin groups (e.g. the VNC servers,
++# the LDAP backends and the Web API backends) have a third level, so all of
++# the possible levels are scanned.
++file(GLOB plugin_dirs "${PLUGINS_DIR}/*" "${PLUGINS_DIR}/platform/*"
++                      "${PLUGINS_DIR}/vncserver/*" "${PLUGINS_DIR}/ldap/*"
++                      "${PLUGINS_DIR}/webapi/*")
 +
 +set(copied 0)
 +foreach(plugin_dir ${plugin_dirs})
