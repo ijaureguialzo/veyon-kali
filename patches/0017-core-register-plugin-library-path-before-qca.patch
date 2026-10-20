@@ -1,0 +1,48 @@
+diff --git a/core/src/VeyonCore.cpp b/core/src/VeyonCore.cpp
+index 60b7028b2..169ddf811 100644
+--- a/core/src/VeyonCore.cpp
++++ b/core/src/VeyonCore.cpp
+@@ -91,6 +91,8 @@ VeyonCore::VeyonCore( QCoreApplication* application, Component component, const
+ 
+ 	initUi();
+ 
++	initLibraryPaths();
++
+ 	initCryptoCore();
+ 
+ 	initAuthenticationCredentials();
+@@ -640,6 +642,22 @@ void VeyonCore::initUi()
+ 
+ 
+ 
++void VeyonCore::initLibraryPaths()
++{
++	// El gestor de plugins registra el directorio de plugins en la lista de
++	// rutas de biblioteca de Qt, pero lo hace más tarde que la inicialización
++	// de QCA.  Como QCA escanea sus providers en cuanto se construye, conviene
++	// registrar la ruta desde el principio para que sólo se carguen los
++	// providers que acompañan a la aplicación.
++	QDir dir( QCoreApplication::applicationDirPath() );
++	if( dir.cd( VeyonCore::pluginDir() ) )
++	{
++		QCoreApplication::addLibraryPath( dir.absolutePath() );
++	}
++}
++
++
++
+ void VeyonCore::initCryptoCore()
+ {
+ 	m_cryptoCore = new CryptoCore;
+diff --git a/core/src/VeyonCore.h b/core/src/VeyonCore.h
+index 8f3fc34dc..cdf8bfc15 100644
+--- a/core/src/VeyonCore.h
++++ b/core/src/VeyonCore.h
+@@ -210,6 +210,7 @@ private:
+ 	void initLogging( const QString& appComponentName );
+ 	void initLocaleAndTranslation();
+ 	void initUi();
++	void initLibraryPaths();
+ 	void initCryptoCore();
+ 	void initAuthenticationCredentials();
+ 	void initPlugins();

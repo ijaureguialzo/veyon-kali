@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 2e2017d..9b830ed 100644
+index 3b0234aaf..0108c44db 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -137,6 +137,11 @@ else()
@@ -14,29 +14,40 @@ index 2e2017d..9b830ed 100644
  	else()
  		set(VEYON_PLUGIN_DIR "../${VEYON_LIB_DIR}")
  		set(VEYON_TRANSLATIONS_DIR "../share/veyon/translations")
-@@ -311,6 +316,21 @@ set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
+@@ -309,7 +314,31 @@ set(qthttpserver_DIR ${3rdparty_DIR}/qthttpserver)
+ set(CMAKE_SKIP_BUILD_RPATH  FALSE)
+ set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
  set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/${VEYON_LIB_DIR}")
- set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
- 
+-set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
++
 +if(APPLE)
 +	# Inside the application bundle the core library lives in
-+	# Contents/Resources/lib, while the executables are in Contents/MacOS.
-+	# The relative rpath makes the bundle relocatable.
++	# Contents/Resources/lib, while the executables are in Contents/MacOS and
++	# the plugins in Contents/PlugIns.  Only relative paths are used, so that
++	# the bundle stays relocatable and does not depend on the location of
++	# the Homebrew installation.
++	#
++	# CMAKE_INSTALL_RPATH_USE_LINK_PATH is deliberately not enabled here:
++	# it would add the absolute paths of the Homebrew libraries, which makes
++	# the bundle load a second copy of Qt at runtime.
++	set(CMAKE_INSTALL_RPATH_USE_LINK_PATH FALSE)
++	# The build tree rpath contains absolute paths to the build directory and
++	# to the Homebrew installation.  It is replaced by the relative rpath so
++	# that the bundle does not pick up a second copy of Qt at runtime.
++	set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 +	list(APPEND CMAKE_INSTALL_RPATH
 +		"@executable_path/../Resources/lib"
 +		"@loader_path/../Resources/lib"
++		"@loader_path/../Frameworks"
 +		"@loader_path"
 +		)
-+	if(DEFINED HOMEBREW_PREFIX OR DEFINED ENV{HOMEBREW_PREFIX})
-+		list(APPEND CMAKE_INSTALL_RPATH "$ENV{HOMEBREW_PREFIX}/lib")
-+	endif()
-+	list(APPEND CMAKE_INSTALL_RPATH "/opt/homebrew/lib" "/usr/local/lib")
++else()
++	set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 +endif()
-+
+ 
  
  include(cmake/CPackDefinitions.cmake)
- 
-@@ -388,3 +408,58 @@ if(VEYON_BUILD_ANDROID)
+@@ -388,3 +417,63 @@ if(VEYON_BUILD_ANDROID)
  
  	add_dependencies(create-apk-veyon-master prepare-apk)
  endif()
@@ -71,18 +82,6 @@ index 2e2017d..9b830ed 100644
 +			-DPLUGINS_DIR=${CMAKE_BINARY_DIR}/plugins
 +			-DBUNDLE_DIR=${CMAKE_BINARY_DIR}/${MACOS_BUNDLE_NAME}.app
 +			-P ${CMAKE_SOURCE_DIR}/cmake/modules/CopyPluginsToBundle.cmake
-+		COMMAND ${CMAKE_COMMAND} -E env
-+			install_name_tool -add_rpath "@executable_path/../Resources/lib"
-+			"${CMAKE_BINARY_DIR}/${MACOS_BUNDLE_NAME}.app/Contents/MacOS/veyon-master"
-+		COMMAND ${CMAKE_COMMAND} -E env
-+			install_name_tool -add_rpath "@executable_path/../Resources/lib"
-+			"${CMAKE_BINARY_DIR}/${MACOS_BUNDLE_NAME}.app/Contents/MacOS/veyon-cli"
-+		COMMAND ${CMAKE_COMMAND} -E env
-+			install_name_tool -add_rpath "@executable_path/../Resources/lib"
-+			"${CMAKE_BINARY_DIR}/${MACOS_BUNDLE_NAME}.app/Contents/MacOS/veyon-configurator"
-+		COMMAND ${CMAKE_COMMAND} -E env
-+			install_name_tool -add_rpath "@executable_path/../Resources/lib"
-+			"${CMAKE_BINARY_DIR}/${MACOS_BUNDLE_NAME}.app/Contents/MacOS/veyon-server"
 +		COMMAND ${CMAKE_COMMAND}
 +			-DMACOS_BUNDLE_NAME=${MACOS_BUNDLE_NAME}
 +			-DMACOS_BUNDLE_BUNDLE_ID=${MACOS_BUNDLE_BUNDLE_ID}
@@ -94,4 +93,21 @@ index 2e2017d..9b830ed 100644
 +		)
 +
 +	add_dependencies(macos_bundle veyon-master veyon-cli veyon-configurator veyon-server veyon-core macos-platform)
++
++	# The plugins are loaded by the executables, so they need a runpath that
++	# points to the core library and to the frameworks of the bundle.
++	# The plugins are loaded by the executables, so they need a runpath that
++	# points to the core library.  The runpath is already set at build time
++	# through CMAKE_BUILD_WITH_INSTALL_RPATH, so it only has to be added
++	# when it is missing.
++	file(GLOB macos_bundle_plugins "${CMAKE_BINARY_DIR}/plugins/*/*.so"
++	                                "${CMAKE_BINARY_DIR}/plugins/platform/*/*.so")
++	foreach(plugin ${macos_bundle_plugins})
++		add_custom_command(TARGET macos_bundle POST_BUILD
++			COMMAND ${CMAKE_COMMAND} -E env
++				sh -c "otool -l \"${plugin}\" | grep -q '@loader_path/../Resources/lib' || \
++				       install_name_tool -add_rpath '@loader_path/../Resources/lib' \"${plugin}\""
++			VERBATIM
++			)
++	endforeach()
 +endif()

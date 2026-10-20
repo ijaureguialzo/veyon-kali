@@ -199,6 +199,12 @@ if [ "$DO_PACKAGE" -eq 1 ]; then
         exit 1
     }
 
+    echo "── desplegar frameworks (macdeployqt) ──"
+    bash "$SCRIPT_DIR/deploy-veyon-macos.sh" || {
+        echo "   ERROR: no se pudieron desplegar los frameworks"
+        exit 1
+    }
+
     echo "── DMG ──"
     bash "$SCRIPT_DIR/package-veyon-macos.sh" || {
         echo "   ERROR: no se pudo generar el DMG"
