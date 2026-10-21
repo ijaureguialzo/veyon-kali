@@ -1509,10 +1509,10 @@ index 000000000..93af4cec3
 +};
 diff --git a/plugins/platform/macos/MacOSServerProcess.cpp b/plugins/platform/macos/MacOSServerProcess.cpp
 new file mode 100644
-index 000000000..8a510a5f4
+index 000000000..a3224afb9
 --- /dev/null
 +++ b/plugins/platform/macos/MacOSServerProcess.cpp
-@@ -0,0 +1,176 @@
+@@ -0,0 +1,202 @@
 +/*
 + * MacOSServerProcess.cpp - implementation of MacOSServerProcess class
 + *
@@ -1550,11 +1550,13 @@ index 000000000..8a510a5f4
 +
 +MacOSServerProcess::MacOSServerProcess( const QProcessEnvironment& processEnvironment,
 +										const QString& userName,
++										const QString& userHomeDirectory,
 +										int userId,
 +										const QString& serverPath,
 +										QObject* parent ) :
 +	QObject( parent ),
 +	m_userName( userName ),
++	m_userHomeDirectory( userHomeDirectory ),
 +	m_userId( userId ),
 +	m_serverPath( serverPath )
 +{
@@ -1581,13 +1583,23 @@ index 000000000..8a510a5f4
 +
 +
 +
-+QString MacOSServerProcess::launchAgentPath( const QString& userName )
++QString MacOSServerProcess::launchAgentPath( const QString& userName,
++										   const QString& userHomeDirectory )
 +{
++	Q_UNUSED( userName )
++
 +	// The launch agent has to be placed in the LaunchAgents directory of
 +	// the user, so that launchd loads it into the GUI domain of that user
-+	// when the session starts.
-+	return QStringLiteral( "/Users/%1/Library/LaunchAgents/%2.plist" )
-+			.arg( userName, launchAgentLabel() );
++	// when the session starts.  The home directory is taken from the
++	// password database, because it is not required to be located in
++	// /Users.
++	if( userHomeDirectory.isEmpty() )
++	{
++		return {};
++	}
++
++	return userHomeDirectory + QStringLiteral( "/Library/LaunchAgents/%1.plist" )
++			.arg( launchAgentLabel() );
 +}
 +
 +
@@ -1606,8 +1618,16 @@ index 000000000..8a510a5f4
 +		return;
 +	}
 +
++	const auto agentPath = launchAgentPath( m_userName, m_userHomeDirectory );
++	if( agentPath.isEmpty() )
++	{
++		vCritical() << "cannot start server for user" << m_userName
++					<< "- no home directory known";
++		return;
++	}
++
 +	// The launch agent has to exist before it can be bootstrapped.
-+	if( QFileInfo::exists( launchAgentPath( m_userName ) ) == false )
++	if( QFileInfo::exists( agentPath ) == false )
 +	{
 +		vWarning() << "no launch agent for user" << m_userName
 +				   << "- server cannot be started";
@@ -1630,7 +1650,7 @@ index 000000000..8a510a5f4
 +		arguments << QStringLiteral( "asuser" ) << QString::number( m_userId )
 +				  << QStringLiteral( "/bin/launchctl" );
 +	}
-+	arguments << QStringLiteral( "bootstrap" ) << domain << launchAgentPath( m_userName );
++	arguments << QStringLiteral( "bootstrap" ) << domain << agentPath;
 +
 +	QProcess process;
 +	process.start( QStringLiteral( "/bin/launchctl" ), arguments );
@@ -1653,13 +1673,19 @@ index 000000000..8a510a5f4
 +
 +void MacOSServerProcess::stop()
 +{
++	const auto agentPath = launchAgentPath( m_userName, m_userHomeDirectory );
++	if( agentPath.isEmpty() )
++	{
++		return;
++	}
++
 +	// Unloading the agent stops the server with a SIGTERM and prevents
 +	// launchd from starting it again.
 +	QProcess process;
 +	process.start( QStringLiteral( "/bin/launchctl" ),
 +				  { QStringLiteral( "bootout" ),
 +					QStringLiteral( "gui/%1" ).arg( m_userId ),
-+					launchAgentPath( m_userName ) } );
++					agentPath } );
 +	if( process.waitForStarted( LaunchctlTimeout ) == false )
 +	{
 +		return;
@@ -1691,10 +1717,10 @@ index 000000000..8a510a5f4
 +}
 diff --git a/plugins/platform/macos/MacOSServerProcess.h b/plugins/platform/macos/MacOSServerProcess.h
 new file mode 100644
-index 000000000..39f6ab206
+index 000000000..2b46f10d3
 --- /dev/null
 +++ b/plugins/platform/macos/MacOSServerProcess.h
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,96 @@
 +/*
 + * MacOSServerProcess.h - declaration of MacOSServerProcess class
 + *
@@ -1743,6 +1769,7 @@ index 000000000..39f6ab206
 +public:
 +	MacOSServerProcess( const QProcessEnvironment& processEnvironment,
 +						const QString& userName,
++						const QString& userHomeDirectory,
 +						int userId,
 +						const QString& serverPath,
 +						QObject* parent = nullptr );
@@ -1768,8 +1795,13 @@ index 000000000..39f6ab206
 +
 +	/*!
 +	 * \brief Returns the path of the launch agent of the given user
++	 *
++	 * The home directory of the user is taken from the password database
++	 * and must not be derived from the user name, because the home
++	 * directory of an account is not required to be located in /Users.
 +	 */
-+	static QString launchAgentPath( const QString& userName );
++	static QString launchAgentPath( const QString& userName,
++									const QString& userHomeDirectory );
 +
 +	/*!
 +	 * \brief Returns the label of the launch agent of the user
@@ -1781,15 +1813,16 @@ index 000000000..39f6ab206
 +	static constexpr auto ServerTerminateTimeout = 2000;
 +
 +	const QString m_userName;
++	const QString m_userHomeDirectory;
 +	const int m_userId;
 +	const QString m_serverPath;
 +};
 diff --git a/plugins/platform/macos/MacOSServiceCore.cpp b/plugins/platform/macos/MacOSServiceCore.cpp
 new file mode 100644
-index 000000000..2009f8a32
+index 000000000..28ef1758d
 --- /dev/null
 +++ b/plugins/platform/macos/MacOSServiceCore.cpp
-@@ -0,0 +1,353 @@
+@@ -0,0 +1,387 @@
 +/*
 + * MacOSServiceCore.cpp - implementation of MacOSServiceCore class
 + *
@@ -1845,6 +1878,17 @@ index 000000000..2009f8a32
 +{
 +	return QCoreApplication::applicationDirPath() + QDir::separator() +
 +		   QStringLiteral( "veyon-server" );
++}
++
++// Escapes the characters that are not allowed in an XML attribute or text
++// node, so that the generated property list is always valid.
++QString escapeXmlValue( const QString& value )
++{
++	QString escaped = value;
++	escaped.replace( QStringLiteral( "&" ), QStringLiteral( "&amp;" ) );
++	escaped.replace( QStringLiteral( "<" ), QStringLiteral( "&lt;" ) );
++	escaped.replace( QStringLiteral( ">" ), QStringLiteral( "&gt;" ) );
++	return escaped;
 +}
 +
 +} // namespace
@@ -2002,12 +2046,15 @@ index 000000000..2009f8a32
 +	vInfo() << "starting server for user" << userName << "at seat" << uid;
 +
 +	// The token of the service data manager is passed to the server so
-+	// that it can exchange data with the service.
++	// that it can exchange data with the service.  It is written into the
++	// launch agent, because launchd does not inherit the environment of
++	// the service.
 +	QProcessEnvironment serverEnvironment = QProcessEnvironment::systemEnvironment();
 +	serverEnvironment.insert( QString::fromLatin1( ServiceDataManager::serviceDataTokenEnvironmentVariable() ),
 +							  QString::fromUtf8( m_dataManager.token().toByteArray() ) );
 +
-+	auto serverProcess = new MacOSServerProcess( serverEnvironment, userName, uid, serverPath, this );
++	auto serverProcess = new MacOSServerProcess( serverEnvironment, userName,
++												  userHomeDirectory( userName ), uid, serverPath, this );
 +	serverProcess->start();
 +
 +	m_serverProcesses[userName] = serverProcess;
@@ -2084,6 +2131,21 @@ index 000000000..2009f8a32
 +	plist += QStringLiteral( "\t<key>ProcessType</key>\n\t<string>Interactive</string>\n" );
 +	plist += QStringLiteral( "\t<key>LimitLoadToSessionType</key>\n\t<string>Aqua</string>\n" );
 +	plist += QStringLiteral( "\t<key>ServiceDescription</key>\n\t<string>Veyon Server</string>\n" );
++
++	// The server is started by launchd, which does not inherit the
++	// environment of the service.  The token of the service data manager
++	// has to be passed explicitly, otherwise the server is not able to
++	// exchange any data with the service.
++	const auto tokenVariable = QString::fromLatin1( ServiceDataManager::serviceDataTokenEnvironmentVariable() );
++	const auto token = QString::fromUtf8( m_dataManager.token().toByteArray() );
++	if( token.isEmpty() == false )
++	{
++		plist += QStringLiteral( "\t<key>EnvironmentVariables</key>\n\t<dict>\n" );
++		plist += QStringLiteral( "\t\t<key>%1</key>\n\t\t<string>%2</string>\n" )
++				.arg( tokenVariable, escapeXmlValue( token ) );
++		plist += QStringLiteral( "\t</dict>\n" );
++	}
++
 +	plist += QStringLiteral( "</dict>\n</plist>\n" );
 +
 +	QFile plistFile( plistPath );
@@ -2128,7 +2190,12 @@ index 000000000..2009f8a32
 +void MacOSServiceCore::removeLaunchAgent( const QString& userName ) const
 +{
 +	const auto uid = userId( userName );
-+	const auto plistPath = MacOSServerProcess::launchAgentPath( userName );
++	const auto plistPath = MacOSServerProcess::launchAgentPath( userName, userHomeDirectory( userName ) );
++
++	if( plistPath.isEmpty() )
++	{
++		return;
++	}
 +
 +	if( uid > 0 )
 +	{
