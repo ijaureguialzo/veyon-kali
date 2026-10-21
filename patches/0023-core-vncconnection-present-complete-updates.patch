@@ -1,0 +1,185 @@
+diff --git a/core/src/ComputerControlInterface.cpp b/core/src/ComputerControlInterface.cpp
+index b5c5d8536..5a13682a7 100644
+--- a/core/src/ComputerControlInterface.cpp
++++ b/core/src/ComputerControlInterface.cpp
+@@ -349,6 +349,9 @@ void ComputerControlInterface::setUpdateMode( UpdateMode updateMode )
+ 	if (vncConnection())
+ 	{
+ 		vncConnection()->setSkipHostPing(m_updateMode == UpdateMode::Basic || m_updateMode == UpdateMode::FeatureControlOnly);
++		// a live view paints every update at full size, so it must never catch one half decoded;
++		// thumbnails are rescaled copies and do not justify a second framebuffer per computer
++		vncConnection()->setPresentCompleteUpdates(m_updateMode == UpdateMode::Live);
+ 	}
+ }
+ 
+diff --git a/core/src/VncConnection.cpp b/core/src/VncConnection.cpp
+index 4bbbb70b8..8d02ff110 100644
+--- a/core/src/VncConnection.cpp
++++ b/core/src/VncConnection.cpp
+@@ -62,7 +62,15 @@ void VncConnection::hookUpdateFB( rfbClient* client, int x, int y, int w, int h
+ 	auto connection = static_cast<VncConnection *>( clientData( client, VncConnectionTag ) );
+ 	if( connection )
+ 	{
+-		Q_EMIT connection->imageUpdated( x, y, w, h );
++		if (connection->m_presentingCompleteUpdates)
++		{
++			// shown with the rest of this framebuffer update, see presentFramebufferUpdate()
++			connection->m_updatedRects.append(QRect(x, y, w, h));
++		}
++		else
++		{
++			Q_EMIT connection->imageUpdated( x, y, w, h );
++		}
+ 	}
+ }
+ 
+@@ -680,6 +688,8 @@ void VncConnection::handleConnection()
+ 		}
+ 
+ 		sendEvents();
++
++		updatePresentationMode();
+ 	}
+ }
+ 
+@@ -746,9 +756,13 @@ bool VncConnection::initFrameBuffer()
+ 
+ 	// initialize framebuffer image which just wraps the allocated memory and ensures cleanup after last
+ 	// image copy using the framebuffer gets destroyed
++	m_framebuffer = QImage(m_client->frameBuffer, m_client->width, m_client->height, QImage::Format_RGB32,
++						   framebufferCleanup, m_client->frameBuffer);
++	m_updatedRects.clear();
++	m_presentingCompleteUpdates = isControlFlagSet(ControlFlag::PresentCompleteUpdates);
++
+ 	m_imgLock.lockForWrite();
+-	m_image = QImage(m_client->frameBuffer, m_client->width, m_client->height, QImage::Format_RGB32,
+-					 framebufferCleanup, m_client->frameBuffer);
++	m_image = m_presentingCompleteUpdates ? m_framebuffer.copy() : m_framebuffer;
+ 	m_imgLock.unlock();
+ 
+ 	// set up pixel format according to QImage
+@@ -793,6 +807,9 @@ void VncConnection::requestFrameufferUpdate(FramebufferUpdateType updateType)
+ 
+ void VncConnection::finishFrameBufferUpdate()
+ {
++	presentFramebufferUpdate();
++	updatePresentationMode();
++
+ 	m_incrementalFramebufferUpdateTimer.restart();
+ 	m_fullFramebufferUpdateTimer.restart();
+ 
+@@ -804,6 +821,64 @@ void VncConnection::finishFrameBufferUpdate()
+ 
+ 
+ 
++void VncConnection::presentFramebufferUpdate()
++{
++	if (m_updatedRects.isEmpty())
++	{
++		return;
++	}
++
++	const auto bounds = m_framebuffer.rect();
++	const auto* source = m_framebuffer.constBits();
++	const auto sourceStride = m_framebuffer.bytesPerLine();
++
++	m_imgLock.lockForWrite();
++
++	// a reader still holding the previous image keeps it intact: bits() detaches from it
++	auto* target = m_image.bits();
++	const auto targetStride = m_image.bytesPerLine();
++
++	for (const auto& updatedRect : std::as_const(m_updatedRects))
++	{
++		const auto rect = updatedRect.intersected(bounds);
++		const auto rowBytes = static_cast<size_t>(rect.width()) * RfbBytesPerPixel;
++		for (int y = rect.top(); y <= rect.bottom(); ++y)
++		{
++			memcpy(target + y * targetStride + rect.left() * RfbBytesPerPixel,
++				   source + y * sourceStride + rect.left() * RfbBytesPerPixel, rowBytes);
++		}
++	}
++
++	m_imgLock.unlock();
++
++	for (const auto& rect : std::as_const(m_updatedRects))
++	{
++		Q_EMIT imageUpdated(rect.x(), rect.y(), rect.width(), rect.height());
++	}
++
++	m_updatedRects.clear();
++}
++
++
++
++void VncConnection::updatePresentationMode()
++{
++	const auto requested = isControlFlagSet(ControlFlag::PresentCompleteUpdates);
++	if (requested == m_presentingCompleteUpdates || m_framebuffer.isNull())
++	{
++		return;
++	}
++
++	m_presentingCompleteUpdates = requested;
++
++	// called between framebuffer updates only, so the buffer holds a complete one
++	m_imgLock.lockForWrite();
++	m_image = requested ? m_framebuffer.copy() : m_framebuffer;
++	m_imgLock.unlock();
++}
++
++
++
+ int VncConnection::fullFramebufferUpdateTimeout() const
+ {
+ 	return m_framebufferState == FramebufferState::Valid ?
+diff --git a/core/src/VncConnection.h b/core/src/VncConnection.h
+index f9b66af2a..ef660012a 100644
+--- a/core/src/VncConnection.h
++++ b/core/src/VncConnection.h
+@@ -142,6 +142,16 @@ public:
+ 		setControlFlag(ControlFlag::RequiresManualUpdateRateControl, on);
+ 	}
+ 
++	/** \brief Decode into a buffer of the connection's own and hand out complete updates only
++	 *
++	 * Without it, image() wraps the buffer LibVNCClient decodes into, so a reader painting or
++	 * encoding it at full size can catch an update half written. With it, each connection keeps a
++	 * second framebuffer. Takes effect between two framebuffer updates. */
++	void setPresentCompleteUpdates(bool on)
++	{
++		setControlFlag(ControlFlag::PresentCompleteUpdates, on);
++	}
++
+ 	void rescaleFramebuffer();
+ 
+ 	static constexpr int VncConnectionTag = 0x590123;
+@@ -185,6 +195,7 @@ private:
+ 		SkipHostPing = 0x20,
+ 		RequiresManualUpdateRateControl = 0x40,
+ 		SkipFramebufferUpdates = 0x80,
++		PresentCompleteUpdates = 0x100,
+ 	};
+ 
+ 	~VncConnection() override;
+@@ -201,6 +212,8 @@ private:
+ 	bool initFrameBuffer();
+ 	void requestFrameufferUpdate(FramebufferUpdateType updateType);
+ 	void finishFrameBufferUpdate();
++	void presentFramebufferUpdate();
++	void updatePresentationMode();
+ 
+ 	int fullFramebufferUpdateTimeout() const;
+ 	int incrementalFramebufferUpdateTimeout() const;
+@@ -262,7 +275,10 @@ private:
+ 	QQueue<VncEvent *> m_eventQueue;
+ 
+ 	// framebuffer data and thread synchronization objects
+-	QImage m_image{};
++	QImage m_framebuffer{}; // LibVNCClient's buffer, written by the connection thread only
++	QList<QRect> m_updatedRects{}; // decoded since the last presented update, when presenting
++	bool m_presentingCompleteUpdates{false}; // connection thread only
++	QImage m_image{}; // m_framebuffer itself, or a copy that receives complete updates only
+ 	QImage m_scaledFramebuffer{};
+ 	QSize m_scaledSize{};
+ 	QReadWriteLock m_imgLock{};
