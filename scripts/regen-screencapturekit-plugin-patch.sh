@@ -106,24 +106,35 @@ def modified_file_diff(upstream_dir, path):
 
 
 def new_file_diff_from_content(path, content):
-    """Genera el diff de un fichero nuevo a partir de su contenido."""
+    """Genera el diff de un fichero nuevo a partir de su contenido.
+
+    El diff se genera contra un directorio temporal que reproduce la
+    ruta final del fichero, de modo que las cabeceras del parche
+    contengan la ruta relativa correcta y no una ruta absoluta del
+    directorio temporal, que no seria portable.
+    """
+    import shutil
     import tempfile
-    with tempfile.NamedTemporaryFile("w", suffix=".tmp", delete=False) as f:
-        f.write(content)
-        tmp = f.name
+
+    tmp_dir = tempfile.mkdtemp(prefix="veyon-sck-patch-")
     try:
+        target = os.path.join(tmp_dir, path)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w") as f:
+            f.write(content)
+
         proc = subprocess.run(
-            ["git", "diff", "--no-index", "--binary", "/dev/null", tmp],
+            ["git", "diff", "--no-index", "--binary", "/dev/null", target],
             capture_output=True, text=True)
         out = proc.stdout
         out = out.replace(
-            f"diff --git b/{tmp} b/{tmp}",
+            f"diff --git b/{target} b/{target}",
             f"diff --git a/{path} b/{path}")
-        out = out.replace(f"+++ b/{tmp}", f"+++ b/{path}")
-        out = out.replace(f"--- a/{tmp}", "--- /dev/null")
+        out = out.replace(f"+++ b/{target}", f"+++ b/{path}")
+        out = out.replace(f"--- a/{target}", "--- /dev/null")
         return out
     finally:
-        os.unlink(tmp)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 parts = [new_file_diff(f"{plugin_dir}/{name}") for name in files]

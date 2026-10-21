@@ -1710,33 +1710,30 @@ index 2676f13ca..3ac7fe17f 100644
  	}
  
  	virtual QStringList supportedSessionTypes() const override
-diff --git a/var/folders/h9/jxb3fz6n0l58hvjmxnhqkxvw0000gn/T/tmplv5xls7d.tmp b/var/folders/h9/jxb3fz6n0l58hvjmxnhqkxvw0000gn/T/tmplv5xls7d.tmp
+diff --git a/var/folders/h9/jxb3fz6n0l58hvjmxnhqkxvw0000gn/T/veyon-sck-patch-qkw0lo73/plugins/vncserver/screencapturekit/CMakeLists.txt b/var/folders/h9/jxb3fz6n0l58hvjmxnhqkxvw0000gn/T/veyon-sck-patch-qkw0lo73/plugins/vncserver/screencapturekit/CMakeLists.txt
 new file mode 100644
-index 000000000..53b332b35
+index 000000000..0964b9fb3
 --- /dev/null
-+++ b/var/folders/h9/jxb3fz6n0l58hvjmxnhqkxvw0000gn/T/tmplv5xls7d.tmp
-@@ -0,0 +1,45 @@
++++ b/var/folders/h9/jxb3fz6n0l58hvjmxnhqkxvw0000gn/T/veyon-sck-patch-qkw0lo73/plugins/vncserver/screencapturekit/CMakeLists.txt
+@@ -0,0 +1,41 @@
 +include(BuildVeyonPlugin)
 +
 +build_veyon_plugin(screencapturekit-vnc-server
 +	NAME ScreenCaptureKitVncServer
 +	SOURCES
-+	ScreenCaptureKitCapturer.h
-+	ScreenCaptureKitCapturer.mm
-+	ScreenCaptureKitConfiguration.h
 +	ScreenCaptureKitVncServer.cpp
 +	ScreenCaptureKitVncServer.h
 +	ScreenCaptureKitVncServerConfigurationWidget.cpp
 +	ScreenCaptureKitVncServerConfigurationWidget.h
 +	ScreenCaptureKitVncServerConfigurationWidget.ui
-+	)
++	ScreenCaptureKitCapturer.h
++	ScreenCaptureKitCapturer.mm
++	ScreenCaptureKitConfiguration.h
++)
 +
-+# The screen capture uses the ScreenCaptureKit framework, which is an
-+# Objective-C API.  The implementation is therefore compiled as Objective-C++.
-+#
-+# The shared precompiled header is built as plain C++ and therefore cannot be
-+# reused from Objective-C++ translation units, so the precompiled headers and
-+# the unity build have to be disabled for them.
++# El capturador es Objective-C++, de modo que se compila de forma aislada
++# y sin los headers precompilados, que no son compatibles con el
++#Objective-C++.
 +set_source_files_properties(
 +	ScreenCaptureKitCapturer.mm
 +	PROPERTIES
@@ -1746,7 +1743,6 @@ index 000000000..53b332b35
 +)
 +
 +target_link_libraries(screencapturekit-vnc-server PRIVATE
-+	Qt${QT_MAJOR_VERSION}::Widgets
 +	"-framework ScreenCaptureKit"
 +	"-framework AVFoundation"
 +	"-framework CoreMedia"
