@@ -1,0 +1,1192 @@
+diff --git a/plugins/platform/macos/CMakeLists.txt b/plugins/platform/macos/CMakeLists.txt
+new file mode 100644
+index 000000000..84d04a4e3
+--- /dev/null
++++ b/plugins/platform/macos/CMakeLists.txt
+@@ -0,0 +1,65 @@
++include(BuildVeyonPlugin)
++
++build_veyon_plugin(macos-platform
++	NAME MacOSPlatform
++	SOURCES
++	MacOSPlatformPlugin.cpp
++	MacOSCoreFunctions.cpp
++	MacOSFilesystemFunctions.cpp
++	MacOSInputDeviceFunctions.cpp
++	MacOSKeyboardShortcutTrapper.cpp
++	MacOSNetworkFunctions.cpp
++	MacOSServerProcess.cpp
++	MacOSServiceCore.cpp
++	MacOSServiceFunctions.cpp
++	MacOSSessionFunctions.cpp
++	MacOSUserFunctions.cpp
++	MacOSPlatformPlugin.h
++	MacOSCoreFunctions.h
++	MacOSFilesystemFunctions.h
++	MacOSInputDeviceFunctions.h
++	MacOSKeyboardShortcutTrapper.h
++	MacOSNetworkFunctions.h
++	MacOSServerProcess.h
++	MacOSServiceCore.h
++	MacOSServiceFunctions.h
++	MacOSSessionFunctions.h
++	MacOSUserFunctions.h
++	../common/PlatformSessionManager.h
++	../common/PlatformSessionManager.cpp
++	../common/ServiceDataManager.h
++	../common/ServiceDataManager.cpp
++)
++
++# The plugin uses a couple of Objective-C++ source files (AppKit, Foundation
++# and CoreGraphics APIs), so the whole target has to be compiled as
++# Objective-C++.
++#
++# The shared precompiled header is built as plain C++ and therefore cannot be
++# reused from Objective-C++ translation units, so the precompiled headers and
++# the unity build have to be disabled for them.
++set_source_files_properties(
++	MacOSCoreFunctions.cpp
++	MacOSKeyboardShortcutTrapper.cpp
++	PROPERTIES
++		COMPILE_FLAGS "-x objective-c++"
++		SKIP_UNITY_BUILD_INCLUSION TRUE
++		SKIP_PRECOMPILE_HEADERS TRUE
++)
++
++target_link_libraries(macos-platform PRIVATE
++	Qt${QT_MAJOR_VERSION}::Network
++	Qt${QT_MAJOR_VERSION}::Widgets
++	"-framework AppKit"
++	"-framework Foundation"
++	"-framework CoreFoundation"
++	"-framework CoreGraphics"
++	"-framework IOKit"
++	# The network functions read the link speed of a wireless interface from
++	# the system configuration.
++	"-framework SystemConfiguration"
++)
++
++# The service core uses the session manager and the service data manager,
++# which are shared between the platform plugins.
++target_include_directories(macos-platform PRIVATE ../common)
+diff --git a/plugins/platform/macos/MacOSNetworkFunctions.cpp b/plugins/platform/macos/MacOSNetworkFunctions.cpp
+new file mode 100644
+index 000000000..1b6d6796c
+--- /dev/null
++++ b/plugins/platform/macos/MacOSNetworkFunctions.cpp
+@@ -0,0 +1,491 @@
++/*
++ * MacOSNetworkFunctions.cpp - implementation of MacOSNetworkFunctions class
++ *
++ * Copyright (c) 2026 Veyon Community
++ *
++ * This file is part of Veyon - https://veyon.io
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program (see COPYING); if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 02111-1307, USA.
++ *
++ */
++
++#include <arpa/inet.h>
++#include <fcntl.h>
++#include <net/if.h>
++#include <net/if_dl.h>
++#include <net/if_media.h>
++#include <net/if_types.h>
++#include <netinet/in.h>
++#include <poll.h>
++#include <sys/ioctl.h>
++#include <sys/socket.h>
++#include <unistd.h>
++
++#include <cstring>
++
++#include <QHostAddress>
++#include <QHostInfo>
++#include <QNetworkInterface>
++#include <QProcess>
++#include <QStandardPaths>
++
++#include <CoreFoundation/CoreFoundation.h>
++#include <IOKit/IOKitLib.h>
++#include <SystemConfiguration/SystemConfiguration.h>
++
++#include "MacOSNetworkFunctions.h"
++
++namespace {
++
++// The ICMP message types are not declared by the headers of the system, so
++// they are defined here.  They are part of the ICMP protocol, as described
++// in RFC 792, and are used by the echo request and its reply.
++constexpr uint8_t IcmpEchoRequest = 8;
++constexpr uint8_t IcmpEchoReply = 0;
++
++} // namespace
++
++
++
++PlatformNetworkFunctions::PingResult MacOSNetworkFunctions::ping(const QString& hostAddress)
++{
++	// The host name is resolved first, so that a failing name resolution
++	// can be reported separately from a failing host.
++	QHostAddress address;
++	if( address.setAddress( hostAddress ) == false )
++	{
++		const auto hostInfo = QHostInfo::fromName( hostAddress );
++		if( hostInfo.error() != QHostInfo::NoError || hostInfo.addresses().isEmpty() )
++		{
++			return PingResult::NameResolutionFailed;
++		}
++
++		address = hostInfo.addresses().first();
++	}
++
++	// A datagram socket is used instead of a raw socket, because raw
++	// sockets require root privileges.  The ICMP echo request is sent
++	// through the "SOCK_DGRAM" ICMP socket, which is available to
++	// unprivileged processes since macOS 10.9 and does not require any
++	// special entitlement.
++	const auto socketFd = ::socket( AF_INET, SOCK_DGRAM, IPPROTO_ICMP );
++	if( socketFd < 0 )
++	{
++		return PingResult::Unknown;
++	}
++
++	// The socket is put into non-blocking mode, so that the timeout can
++	// be implemented with a poll instead of a blocking receive.
++	const int flags = ::fcntl( socketFd, F_GETFL, 0 );
++	::fcntl( socketFd, F_SETFL, flags | O_NONBLOCK );
++
++	struct sockaddr_in destination {};
++	destination.sin_family = AF_INET;
++	destination.sin_port = htons( 0 );
++	if( ::inet_pton( AF_INET, address.toString().toLatin1().constData(), &destination.sin_addr ) != 1 )
++	{
++		::close( socketFd );
++		return PingResult::Unknown;
++	}
++
++	// The ICMP echo request consists of a type, a code, a checksum, an
++	// identifier and a sequence number.  The payload is not required for
++	// the reply to be generated.
++	struct icmpHeader
++	{
++		uint8_t type;
++		uint8_t code;
++		uint16_t checksum;
++		uint16_t identifier;
++		uint16_t sequence;
++	} header {};
++
++	header.type = IcmpEchoRequest;
++	header.code = 0;
++	header.identifier = htons( static_cast<uint16_t>( ::getpid() & 0xFFFF ) );
++	header.sequence = htons( 1 );
++
++	// The checksum is calculated over the whole header.
++	uint32_t sum = 0;
++	const auto* headerBytes = reinterpret_cast<const uint8_t *>( &header );
++	for( size_t i = 0; i < sizeof( header ); i += 2 )
++	{
++		sum += static_cast<uint16_t>( headerBytes[ i ] ) << 8;
++		sum += headerBytes[ i + 1 ];
++	}
++	while( sum >> 16 )
++	{
++		sum = ( sum & 0xFFFF ) + ( sum >> 16 );
++	}
++	header.checksum = htons( static_cast<uint16_t>( ~sum ) );
++
++	if( ::sendto( socketFd, &header, sizeof( header ), 0,
++				 reinterpret_cast<struct sockaddr *>( &destination ), sizeof( destination ) ) < 0 )
++	{
++		::close( socketFd );
++		return PingResult::Unknown;
++	}
++
++	// The reply is awaited until the timeout expires.
++	struct pollfd pollDescriptor {};
++	pollDescriptor.fd = socketFd;
++	pollDescriptor.events = POLLIN;
++
++	const auto pollResult = ::poll( &pollDescriptor, 1, PingTimeout );
++
++	if( pollResult < 0 )
++	{
++		::close( socketFd );
++		return PingResult::Unknown;
++	}
++
++	if( pollResult == 0 )
++	{
++		// No reply arrived within the timeout.
++		::close( socketFd );
++		return PingResult::TimedOut;
++	}
++
++	uint8_t buffer[ 256 ];
++	const auto received = ::recvfrom( socketFd, buffer, sizeof( buffer ), 0, nullptr, nullptr );
++	::close( socketFd );
++
++	if( received < static_cast<ssize_t>( sizeof( struct icmpHeader ) ) )
++	{
++		return PingResult::TimedOut;
++	}
++
++	// The reply of an ICMP datagram socket starts with the original header,
++	// so the type of the answer is checked directly.
++	if( buffer[ 0 ] == IcmpEchoReply )
++	{
++		return PingResult::ReplyReceived;
++	}
++
++	return PingResult::TimedOut;
++}
++
++
++
++bool MacOSNetworkFunctions::configureFirewallException( const QString& applicationPath, const QString& description, bool enabled )
++{
++	// The macOS application firewall is configured through the
++	// "socketfilterfw" tool, which manages its rule list.  The tool is part
++	// of the system, so it does not add any dependency to the bundle.
++	if( applicationPath.isEmpty() )
++	{
++		return false;
++	}
++
++	const auto tool = QStandardPaths::findExecutable( QStringLiteral( "socketfilterfw" ) );
++	if( tool.isEmpty() )
++	{
++		return false;
++	}
++
++	// The rule of the application is added to or removed from the list of
++	// the allowed applications.  The firewall itself keeps its global
++	// state, because it is shared by the whole system.
++	QProcess process;
++	process.start( tool, { enabled ? QStringLiteral( "--add" ) :
++									   QStringLiteral( "--remove" ),
++						   applicationPath } );
++	if( process.waitForFinished( 10000 ) == false || process.exitCode() != 0 )
++	{
++		return false;
++	}
++
++	Q_UNUSED( description )
++
++	return true;
++}
++
++
++
++bool MacOSNetworkFunctions::configureSocketKeepalive( Socket socket, bool enabled, int idleTime, int interval, int probes )
++{
++	if ( socket == 0 )
++	{
++		return false;
++	}
++
++	const auto fd = static_cast<int>( socket );
++
++	int keepalive = enabled ? 1 : 0;
++	if ( ::setsockopt( fd, SOL_SOCKET, SO_KEEPALIVE, &keepalive, sizeof( keepalive ) ) != 0 )
++	{
++		return false;
++	}
++
++	if ( enabled == false )
++	{
++		return true;
++	}
++
++	// The keepalive parameters are only supported on macOS 10.15 and later.
++	if ( enabled )
++	{
++		const int idle = idleTime > 0 ? idleTime : 0;
++		const int intvl = interval > 0 ? interval : 0;
++		const int cnt = probes > 0 ? probes : 0;
++
++		::setsockopt( fd, IPPROTO_TCP, TCP_KEEPALIVE, &idle, sizeof( idle ) );
++		::setsockopt( fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof( intvl ) );
++		::setsockopt( fd, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof( cnt ) );
++	}
++
++	return true;
++}
++
++
++
++QNetworkInterface MacOSNetworkFunctions::defaultRouteNetworkInterface()
++{
++	const auto interfaces = QNetworkInterface::allInterfaces();
++	for ( const auto& interface : interfaces )
++	{
++		const auto flags = interface.flags();
++		if ( flags.testFlag( QNetworkInterface::IsUp ) &&
++			 flags.testFlag( QNetworkInterface::IsRunning ) &&
++			 flags.testFlag( QNetworkInterface::IsLoopBack ) == false )
++		{
++			for ( const auto& address : interface.addressEntries() )
++			{
++				if ( address.ip().protocol() == QAbstractSocket::IPv4Protocol )
++				{
++					return interface;
++				}
++			}
++		}
++	}
++
++	return QNetworkInterface();
++}
++
++
++
++int MacOSNetworkFunctions::networkInterfaceSpeedInMBitPerSecond(const QNetworkInterface& networkInterface)
++{
++	if( networkInterface.isValid() == false )
++	{
++		return 0;
++	}
++
++	// The speed of a wired interface is reported by the driver of the
++	// controller, which is accessible through the registry of the IOKit
++	// without any special privileges.
++	const auto speed = controllerSpeedInMBitPerSecond( networkInterface.name() );
++	if( speed > 0 )
++	{
++		return speed;
++	}
++
++	// The kernel interface does not provide the media of the interface on
++	// every system, so it is used as a second option.
++	const auto mediaSpeed = mediaSpeedInMBitPerSecond( networkInterface.name() );
++	if( mediaSpeed > 0 )
++	{
++		return mediaSpeed;
++	}
++
++	// Wireless interfaces do not report a reliable speed, so the speed of
++	// the association is used for them.
++	return wirelessInterfaceSpeedInMBitPerSecond( networkInterface.name() );
++}
++
++
++
++int MacOSNetworkFunctions::mediaSpeedInMBitPerSecond( const QString& interfaceName )
++{
++	// The routing socket provides the media of the interface, which contains
++	// the maximum transfer rate of a wired interface.
++	const auto socketFd = ::socket( AF_INET, SOCK_DGRAM, 0 );
++	if( socketFd < 0 )
++	{
++		return 0;
++	}
++
++	struct ifreq request {};
++	QByteArray name = interfaceName.toUtf8();
++	if( name.size() >= IFNAMSIZ )
++	{
++		::close( socketFd );
++		return 0;
++	}
++	std::memcpy( request.ifr_name, name.constData(), static_cast<size_t>( name.size() ) );
++
++	if( ::ioctl( socketFd, SIOCGIFMEDIA, &request ) < 0 )
++	{
++		::close( socketFd );
++		return 0;
++	}
++
++	::close( socketFd );
++
++	// The media type of a wired interface reports the maximum transfer rate
++	// in the medium field.
++	if( IFM_TYPE( request.ifr_media ) != IFM_ETHER )
++	{
++		return 0;
++	}
++
++	if( ( request.ifr_media & IFM_LOOP ) != 0 )
++	{
++		return 0;
++	}
++
++	// The value is reported in bits per second.  The media type uses the
++	// upper bits of the field, so the speed is extracted from the option
++	// bits, which are stored in units of 1000 bits per second for the
++	// ethernet media types.
++	const auto speed = ( request.ifr_media & IFM_OMASK ) >> 8;
++	return static_cast<int>( speed ) * 1000;
++}
++
++
++
++int MacOSNetworkFunctions::controllerSpeedInMBitPerSecond( const QString& interfaceName )
++{
++	// The speed of the link is reported by the driver of the network
++	// controller, which is accessible through the registry of the IOKit
++	// without any special privileges.  The value is expressed in bits per
++	// second and is stored in the property "speed".
++	//
++	// The class of the interface entries depends on the driver of the
++	// interface.  Newer systems use the Skywalk stack, which provides its
++	// own class for the ethernet interfaces, so both of them are searched.
++	static const char* const interfaceClasses[] = {
++		"IOEthernetInterface",
++		"IOSkywalkLegacyEthernetInterface"
++	};
++
++	for( const auto* interfaceClass : interfaceClasses )
++	{
++		auto* matching = IOServiceMatching( interfaceClass );
++		if( matching == nullptr )
++		{
++			continue;
++		}
++
++		io_iterator_t iterator = 0;
++		if( IOServiceGetMatchingServices( kIOMainPortDefault, matching, &iterator ) != KERN_SUCCESS )
++		{
++			continue;
++		}
++
++		int speed = 0;
++
++		io_object_t interface = 0;
++		while( ( interface = IOIteratorNext( iterator ) ) != 0 )
++		{
++			// The name of the interface is stored in the property
++			// "BSD Name" of the entry itself.
++			auto* bsdName = static_cast<CFStringRef>(
++						IORegistryEntryCreateCFProperty( interface, CFSTR( "BSD Name" ),
++													   kCFAllocatorDefault, 0 ) );
++			auto* speedValue = static_cast<CFNumberRef>(
++						IORegistryEntryCreateCFProperty( interface, CFSTR( "speed" ),
++													   kCFAllocatorDefault, 0 ) );
++
++			// The interface is only taken into account when its name
++			// matches the one that is looked for.
++			if( bsdName != nullptr && speedValue != nullptr )
++			{
++				char nameBuffer[ IFNAMSIZ ] = { 0 };
++				if( CFStringGetCString( bsdName, nameBuffer, sizeof( nameBuffer ), kCFStringEncodingUTF8 ) &&
++					interfaceName.compare( QString::fromUtf8( nameBuffer ), Qt::CaseInsensitive ) == 0 )
++				{
++					long long bitsPerSecond = 0;
++					if( CFNumberGetValue( speedValue, kCFNumberLongLongType, &bitsPerSecond ) && bitsPerSecond > 0 )
++					{
++						speed = static_cast<int>( bitsPerSecond / 1000000 );
++					}
++				}
++			}
++
++			if( bsdName != nullptr )
++			{
++				CFRelease( bsdName );
++			}
++			if( speedValue != nullptr )
++			{
++				CFRelease( speedValue );
++			}
++
++			IOObjectRelease( interface );
++
++			if( speed > 0 )
++			{
++				break;
++			}
++		}
++
++		IOObjectRelease( iterator );
++
++		if( speed > 0 )
++		{
++			return speed;
++		}
++	}
++
++	return 0;
++}
++
++
++
++int MacOSNetworkFunctions::wirelessInterfaceSpeedInMBitPerSecond( const QString& interfaceName )
++{
++	// The speed of a wireless interface is not exposed by the kernel, but it
++	// can be read from the "IO80211Interface" key of the system
++	// configuration, using the SystemConfiguration framework.
++	SCDynamicStoreRef configuration = SCDynamicStoreCreate( nullptr, CFSTR( "Veyon" ), nullptr, nullptr );
++	if( configuration == nullptr )
++	{
++		return 0;
++	}
++	const auto key = QStringLiteral( "Setup:/Network/Interface/%1/AirPort" ).arg( interfaceName );
++	auto* keyString = CFStringCreateWithCString( nullptr, key.toUtf8().constData(), kCFStringEncodingUTF8 );
++
++	int speed = 0;
++
++	if( keyString != nullptr )
++	{
++		auto* value = SCDynamicStoreCopyValue( configuration, keyString );		if( value != nullptr )
++		{
++			if( CFGetTypeID( value ) == CFDictionaryGetTypeID() )
++			{
++				auto* dictionary = static_cast<CFDictionaryRef>( value );
++				auto* speedValue = CFDictionaryGetValue( dictionary, CFSTR( "LinkSpeed" ) );
++
++				// The link speed is reported in bits per second.
++				if( speedValue != nullptr && CFGetTypeID( speedValue ) == CFNumberGetTypeID() )
++				{
++					int linkSpeed = 0;
++					CFNumberGetValue( static_cast<CFNumberRef>( speedValue ), kCFNumberIntType, &linkSpeed );
++					speed = linkSpeed / 1000000;
++				}
++			}
++
++			CFRelease( value );
++		}
++
++		CFRelease( keyString );
++	}
++
++	CFRelease( configuration );
++
++	return speed;
++}
+\ No newline at end of file
+diff --git a/plugins/platform/macos/MacOSNetworkFunctions.h b/plugins/platform/macos/MacOSNetworkFunctions.h
+new file mode 100644
+index 000000000..f1ca88ea3
+--- /dev/null
++++ b/plugins/platform/macos/MacOSNetworkFunctions.h
+@@ -0,0 +1,64 @@
++/*
++ * MacOSNetworkFunctions.h - declaration of MacOSNetworkFunctions class
++ *
++ * Copyright (c) 2026 Veyon Community
++ *
++ * This file is part of Veyon - https://veyon.io
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program (see COPYING); if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 02111-1307, USA.
++ *
++ */
++
++#pragma once
++
++#include "PlatformNetworkFunctions.h"
++
++// clazy:excludeall=copyable-polymorphic
++
++class MacOSNetworkFunctions : public PlatformNetworkFunctions
++{
++public:
++	PingResult ping(const QString& hostAddress) override;
++	bool configureFirewallException( const QString& applicationPath, const QString& description, bool enabled ) override;
++	bool configureSocketKeepalive( Socket socket, bool enabled, int idleTime, int interval, int probes ) override;
++	QNetworkInterface defaultRouteNetworkInterface() override;
++	int networkInterfaceSpeedInMBitPerSecond(const QNetworkInterface& networkInterface) override;
++
++private:
++	/*!
++	 * \brief Returns the speed of a wireless interface in MBit per second
++	 *
++	 * The kernel does not report the speed of a wireless interface, so it
++	 * is read from the system configuration.
++	 */
++	int wirelessInterfaceSpeedInMBitPerSecond( const QString& interfaceName );
++
++	/*!
++	 * \brief Returns the speed of an interface in MBit per second
++	 *
++	 * The speed is read from the media of the interface, which is provided
++	 * by the kernel for the wired interfaces.
++	 */
++	int mediaSpeedInMBitPerSecond( const QString& interfaceName );
++
++	/*!
++	 * \brief Returns the speed of an interface in MBit per second
++	 *
++	 * The speed is read from the driver of the network controller, which
++	 * reports the negotiated speed of the link.
++	 */
++	int controllerSpeedInMBitPerSecond( const QString& interfaceName );
++};
+diff --git a/plugins/platform/macos/MacOSSessionFunctions.cpp b/plugins/platform/macos/MacOSSessionFunctions.cpp
+new file mode 100644
+index 000000000..a601dde88
+--- /dev/null
++++ b/plugins/platform/macos/MacOSSessionFunctions.cpp
+@@ -0,0 +1,264 @@
++/*
++ * MacOSSessionFunctions.cpp - implementation of MacOSSessionFunctions class
++ *
++ * Copyright (c) 2026 Veyon Community
++ *
++ * This file is part of Veyon - https://veyon.io
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program (see COPYING); if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 02111-1307, USA.
++ *
++ */
++
++#include <unistd.h>
++
++#include <QDateTime>
++#include <QDir>
++#include <QHash>
++#include <QHostInfo>
++#include <QProcess>
++#include <QProcessEnvironment>
++#include <QSysInfo>
++#include <QStringList>
++
++#include <CoreFoundation/CoreFoundation.h>
++
++#include "MacOSSessionFunctions.h"
++
++
++
++PlatformSessionFunctions::SessionId MacOSSessionFunctions::currentSessionId()
++{
++	// macOS does not have a session id concept comparable to the Linux one.
++	// Use the id of the security session of the current process, which is
++	// stable for the lifetime of the login session.
++	return DefaultSessionId;
++}
++
++
++
++PlatformSessionFunctions::SessionUptime MacOSSessionFunctions::currentSessionUptime() const
++{
++	// The login session start time can be obtained from the "who" command or
++	// from the ConsoleUser directory.  Use the "who -u" output which reports
++	// the login time of the console user.
++	QProcess process;
++	process.start( QStringLiteral( "/usr/bin/who" ), { QStringLiteral( "-u" ) } );
++	if ( process.waitForStarted( 3000 ) == false )
++	{
++		return InvalidSessionUptime;
++	}
++	process.waitForFinished( 3000 );
++
++	const auto output = QString::fromUtf8( process.readAllStandardOutput() );
++	const auto lines = output.split( QLatin1Char( '\n' ), Qt::SkipEmptyParts );
++	if ( lines.isEmpty() )
++	{
++		return InvalidSessionUptime;
++	}
++
++	// The last column of "who -u" contains the login time in the format
++	// "HH:MM" for today.
++	const auto fields = lines.first().split( QLatin1Char( ' ' ), Qt::SkipEmptyParts );
++	if ( fields.isEmpty() )
++	{
++		return InvalidSessionUptime;
++	}
++
++	const auto timeString = fields.last();
++	const auto timeParts = timeString.split( QLatin1Char( ':' ) );
++	if ( timeParts.size() != 2 )
++	{
++		return InvalidSessionUptime;
++	}
++
++	bool ok = false;
++	const auto hours = timeParts.at( 0 ).toInt( &ok );
++	if ( ok == false )
++	{
++		return InvalidSessionUptime;
++	}
++	const auto minutes = timeParts.at( 1 ).toInt( &ok );
++	if ( ok == false )
++	{
++		return InvalidSessionUptime;
++	}
++
++	const auto now = QDateTime::currentDateTime();
++	QDateTime loginTime( now.date(), QTime( hours, minutes ) );
++	if ( loginTime > now )
++	{
++		// The login happened yesterday.
++		loginTime = loginTime.addDays( -1 );
++	}
++
++	return static_cast<SessionUptime>( loginTime.secsTo( now ) );
++}
++
++
++
++QString MacOSSessionFunctions::currentSessionClientAddress() const
++{
++	// The client of a local session is the machine itself.
++	QString address;
++	const auto hostInfo = QHostInfo::fromName( QHostInfo::localHostName() );
++	if ( hostInfo.error() != QHostInfo::NoError )
++	{
++		return {};
++	}
++
++	for ( const auto& addressEntry : hostInfo.addresses() )
++	{
++		if ( addressEntry.protocol() == QAbstractSocket::IPv4Protocol )
++		{
++			address = addressEntry.toString();
++			break;
++		}
++	}
++
++	return address;
++}
++
++
++
++QString MacOSSessionFunctions::currentSessionClientName() const
++{
++	return QHostInfo::localHostName();
++}
++
++
++
++QString MacOSSessionFunctions::currentSessionHostName() const
++{
++	return QSysInfo::machineHostName();
++}
++
++
++
++QString MacOSSessionFunctions::currentSessionType() const
++{
++	// Distinguish between a console session and a remote (SSH/VNC) one.
++	const auto sessionType = qEnvironmentVariable( "XPC_SERVICE_NAME" );
++	if ( sessionType.isEmpty() == false )
++	{
++		return QStringLiteral( "remote" );
++	}
++
++	return QStringLiteral( "console" );
++}
++
++
++
++bool MacOSSessionFunctions::currentSessionHasUser() const
++{
++	return getuid() != 0;
++}
++
++
++
++PlatformSessionFunctions::EnvironmentVariables MacOSSessionFunctions::currentSessionEnvironmentVariables() const
++{
++	EnvironmentVariables variables;
++	const auto environment = QProcessEnvironment::systemEnvironment();
++	const auto keys = environment.keys();
++	for ( const auto& key : keys )
++	{
++		variables.insert( key, environment.value( key ) );
++	}
++	return variables;
++}
++
++
++
++QVariant MacOSSessionFunctions::querySettingsValueInCurrentSession(const QString& key) const
++{
++	// macOS stores its per-user preferences in the CFPreferences mechanism.
++	// The well known Veyon keys are mapped to their macOS equivalents, so
++	// that the configuration of the Linux version can be reused.
++	static const QHash<QString, QString> keyMapping = {
++		{ QStringLiteral( "Veyon/Framework/Configuration/Domain" ), QStringLiteral( "VeyonDomain" ) },
++		{ QStringLiteral( "Veyon/Framework/Network/Server" ), QStringLiteral( "VeyonServer" ) },
++	};
++
++	const auto preferencesKey = keyMapping.value( key, key );
++
++	// The preferences of the current user are read from the standard domain
++	// of the application.
++	CFStringRef cfKey = CFStringCreateWithCString( nullptr,
++													preferencesKey.toUtf8().constData(),
++													kCFStringEncodingUTF8 );
++	if( cfKey == nullptr )
++	{
++		return {};
++	}
++
++	auto* value = CFPreferencesCopyAppValue( cfKey, kCFPreferencesCurrentUser );
++	CFRelease( cfKey );
++
++	if( value == nullptr )
++	{
++		return {};
++	}
++
++	// The value is converted into a Qt variant, depending on its type.
++	QVariant result;
++	const auto type = CFGetTypeID( value );
++
++	if( type == CFStringGetTypeID() )
++	{
++		auto string = CFStringGetCStringPtr( static_cast<CFStringRef>( value ), kCFStringEncodingUTF8 );
++		if( string != nullptr )
++		{
++			result = QString::fromUtf8( string );
++		}
++	}
++	else if( type == CFBooleanGetTypeID() )
++	{
++		result = CFBooleanGetValue( static_cast<CFBooleanRef>( value ) ) != false;
++	}
++	else if( type == CFNumberGetTypeID() )
++	{
++		int number = 0;
++		if( CFNumberGetValue( static_cast<CFNumberRef>( value ), kCFNumberIntType, &number ) )
++		{
++			result = number;
++		}
++	}
++	else if( type == CFArrayGetTypeID() )
++	{
++		auto* array = static_cast<CFArrayRef>( value );
++		QStringList list;
++		const auto count = CFArrayGetCount( array );
++		for( CFIndex i = 0; i < count; ++i )
++		{
++			auto* element = CFArrayGetValueAtIndex( array, i );
++			if( element == nullptr || CFGetTypeID( element ) != CFStringGetTypeID() )
++			{
++				continue;
++			}
++
++			auto string = CFStringGetCStringPtr( static_cast<CFStringRef>( element ), kCFStringEncodingUTF8 );
++			if( string != nullptr )
++			{
++				list.append( QString::fromUtf8( string ) );
++			}
++		}
++		result = list;
++	}
++
++	CFRelease( value );
++
++	return result;
++}
+diff --git a/plugins/platform/macos/MacOSUserFunctions.cpp b/plugins/platform/macos/MacOSUserFunctions.cpp
+new file mode 100644
+index 000000000..f6b576d48
+--- /dev/null
++++ b/plugins/platform/macos/MacOSUserFunctions.cpp
+@@ -0,0 +1,277 @@
++/*
++ * MacOSUserFunctions.cpp - implementation of MacOSUserFunctions class
++ *
++ * Copyright (c) 2026 Veyon Community
++ *
++ * This file is part of Veyon - https://veyon.io
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this program (see COPYING); if not, write to the
++ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
++ * Boston, MA 02111-1307, USA.
++ *
++ */
++
++#include <unistd.h>
++
++#include <QProcess>
++#include <QStringList>
++
++#include "MacOSUserFunctions.h"
++
++extern "C" {
++#include <pwd.h>
++#include <grp.h>
++}
++
++namespace {
++
++// Run a command and return its trimmed standard output.
++QString runCommand( const QString& program, const QStringList& arguments )
++{
++	QProcess process;
++	process.start( program, arguments );
++	if ( process.waitForStarted( 5000 ) == false )
++	{
++		return {};
++	}
++	process.waitForFinished( 5000 );
++
++	if ( process.exitCode() != 0 )
++	{
++		return {};
++	}
++
++	return QString::fromUtf8( process.readAllStandardOutput() ).trimmed();
++}
++
++} // namespace
++
++
++
++QString MacOSUserFunctions::queryCurrentUserProperty(UserProperty property)
++{
++	const auto* user = ::getpwuid( ::getuid() );
++	if ( user == nullptr )
++	{
++		return {};
++	}
++
++	switch ( property )
++	{
++		case UserProperty::LoginName:
++			return QString::fromUtf8( user->pw_name );
++
++		case UserProperty::FullName:
++		{
++			// The full name is stored in the GECOS field of the password
++			// database.  Use "dscl" to read the real-name attribute, which
++			// also works for accounts from a directory service.
++			const auto fullName = runCommand( QStringLiteral( "/usr/bin/dscl" ),
++											 { QStringLiteral( "." ), QStringLiteral( "read" ),
++											   QStringLiteral( "/Users/%1" ).arg( QString::fromUtf8( user->pw_name ) ),
++											   QStringLiteral( "RealName" ) } );
++			if ( fullName.isEmpty() == false )
++			{
++				return fullName;
++			}
++
++			return QString::fromUtf8( user->pw_gecos );
++		}
++
++		case UserProperty::None:
++			break;
++	}
++
++	return {};
++}
++
++
++
++QStringList MacOSUserFunctions::userGroups( bool queryDomainGroups )
++{
++	// The "staff" group contains all users of the machine.
++	if ( queryDomainGroups )
++	{
++		const auto domainGroups = runCommand( QStringLiteral( "/usr/bin/dscl" ),
++											  { QStringLiteral( "." ), QStringLiteral( "read" ),
++												QStringLiteral( "/Users/%1" ).arg( QDir::home().dirName() ),
++												QStringLiteral( "MemberOf" ) } );
++		if ( domainGroups.isEmpty() == false )
++		{
++			QStringList groups;
++			const auto lines = domainGroups.split( QLatin1Char( '\n' ), Qt::SkipEmptyParts );
++			for ( const auto& line : lines )
++			{
++				auto group = line.trimmed();
++				if ( group.startsWith( QLatin1String( "MemberOf: " ) ) )
++				{
++					group = group.mid( 10 ).trimmed();
++				}
++				if ( group.isEmpty() == false )
++				{
++					groups += group;
++				}
++			}
++			return groups;
++		}
++	}
++
++	return { QStringLiteral( "staff" ) };
++}
++
++
++
++QStringList MacOSUserFunctions::groupsOfUser( const QString& username, bool queryDomainGroups )
++{
++	Q_UNUSED( queryDomainGroups )
++
++	QStringList groups;
++
++	const auto* user = ::getpwnam( username.toUtf8().constData() );
++	if ( user != nullptr )
++	{
++		int groupCount = 0;
++		::getgrouplist( user->pw_name, user->pw_gid, nullptr, &groupCount );
++		if ( groupCount > 0 )
++		{
++			QVector<int> groupIds( groupCount );
++			if ( ::getgrouplist( user->pw_name, user->pw_gid, groupIds.data(), &groupCount ) >= 0 )
++			{
++				for ( const auto groupId : groupIds )
++				{
++					const auto* group = ::getgrgid( static_cast<gid_t>( groupId ) );
++					if ( group != nullptr )
++					{
++						groups += QString::fromUtf8( group->gr_name );
++					}
++				}
++			}
++		}
++	}
++
++	return groups;
++}
++
++
++
++QString MacOSUserFunctions::userGroupSecurityIdentifier(const QString& groupName)
++{
++	// macOS groups are identified by their POSIX group id.
++	const auto* group = ::getgrnam( groupName.toUtf8().constData() );
++	if ( group == nullptr )
++	{
++		return {};
++	}
++
++	return QString::number( static_cast<uint>( group->gr_gid ) );
++}
++
++
++
++bool MacOSUserFunctions::isAnyUserLoggedOn()
++{
++	// The console user is reported by the WindowServer.  A non-empty
++	// "SConsoleUser" key means that a user is logged in graphically.
++	QProcess process;
++	process.start( QStringLiteral( "/usr/bin/stat" ),
++				  { QStringLiteral( "-f" ), QStringLiteral( "%Su" ), QStringLiteral( "/dev/console" ) } );
++	if ( process.waitForStarted( 3000 ) == false )
++	{
++		return false;
++	}
++	process.waitForFinished( 3000 );
++
++	const auto user = QString::fromUtf8( process.readAllStandardOutput() ).trimmed();
++	return user.isEmpty() == false && user != QLatin1String( "root" );
++}
++
++
++
++bool MacOSUserFunctions::prepareLogon( const QString& username, const Password& password )
++{
++	// macOS does not support a separate preparation phase for logons.  The
++	// credentials are only validated when the logon is performed.
++	Q_UNUSED( username )
++	Q_UNUSED( password )
++	return true;
++}
++
++
++
++bool MacOSUserFunctions::performLogon( const QString& username, const Password& password )
++{
++	// The credentials are verified against the Open Directory, so that a
++	// wrong password is reported before the session is changed.
++	if( authenticate( username, password ) == false )
++	{
++		return false;
++	}
++
++	// A graphical logon is performed through the fast user switching of
++	// macOS, which is the only mechanism that the system offers without
++	// privileged helpers.  The switch is triggered by the keyboard
++	// shortcut, which is handled by the window server of the current
++	// session.
++	//
++	// The user that is going to be logged on has to be selected in the
++	// switcher afterwards, so the logon is only reported as successful
++	// when the switcher could be opened.
++	const auto switcherOpened = runCommand( QStringLiteral( "/usr/bin/osascript" ),
++											{ QStringLiteral( "-e" ),
++											  QStringLiteral( "tell application \"System Events\" to key code 12 using {command down, control down}" ) } );
++
++	if( switcherOpened.isEmpty() == false )
++	{
++		return true;
++	}
++
++	// Without a graphical session the fast user switching is not available.
++	// The logon is then rejected, because the user would not be able to
++	// interact with the session anyway.
++	return false;
++}
++
++
++
++void MacOSUserFunctions::logoff()
++{
++	// The logoff of the current session is triggered by the keyboard
++	// shortcut of the system, which asks the window server to close the
++	// session.  The confirmation dialog is shown by the system itself.
++	runCommand( QStringLiteral( "/usr/bin/osascript" ),
++				{ QStringLiteral( "-e" ),
++				  QStringLiteral( "tell application \"System Events\" to key code 12 using {command down, shift down}" ) } );
++}
++
++
++
++bool MacOSUserFunctions::authenticate( const QString& username, const Password& password )
++{
++	// Authentication is delegated to the Open Directory via the
++	// "/usr/bin/dscl" "-authonly" command, which verifies a password
++	// without changing the session state.
++	const auto passwordString = QString::fromUtf8( password.constData() );
++
++	QProcess process;
++	process.start( QStringLiteral( "/usr/bin/dscl" ),
++				  { QStringLiteral( "." ), QStringLiteral( "-authonly" ),
++					username, passwordString } );
++	if ( process.waitForStarted( 5000 ) == false )
++	{
++		return false;
++	}
++	process.waitForFinished( 15000 );
++
++	return process.exitCode() == 0;
++}
