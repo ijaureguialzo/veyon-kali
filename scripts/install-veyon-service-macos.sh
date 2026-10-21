@@ -147,5 +147,20 @@ echo "── estado ──"
 launchctl print "system/$DAEMON_LABEL" 2>/dev/null | grep -E "^\s*state = |^\s*pid = " | head -3 || true
 
 echo "==> OK: servicio launchd instalado y cargado"
-echo "    Los permisos TCC (Screen Recording y Accessibility) hay que concederlos"
-echo "    manualmente en Ajustes del Sistema > Privacidad y seguridad."
+
+# 5. Informar del estado de los permisos TCC ───────────────────────────────
+# El backend nativo de captura de pantalla (ScreenCaptureKit) necesita el
+# permiso de "Screen Recording".  macOS concede ese permiso por bundle
+# identifier, de modo que un proceso lanzado por launchd no hereda el
+# contexto del terminal del usuario y lo necesita de forma explícita.
+#
+# Cuando el permiso falta, el servidor sigue funcionando con el backend
+# headless, que no captura la pantalla pero mantiene el puerto VNC abierto.
+BUNDLE_ID="$(defaults read "$INSTALLED_BUNDLE/Contents/Info" CFBundleIdentifier 2>/dev/null || echo "io.veyon.veyon")"
+
+echo "── permisos de privacidad ──"
+echo "    bundle identifier: $BUNDLE_ID"
+echo "    concede en Ajustes del Sistema > Privacidad y seguridad > Grabación de pantalla"
+echo "    añade $BUNDLE_ID (o el propio /Applications/Veyon.app)"
+echo "    la captura de pantalla sólo se usa si el permiso está concedido;"
+echo "    en caso contrario el servidor recurre al backend headless"
