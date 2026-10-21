@@ -665,3 +665,44 @@ Descartado, con el motivo:
 | `spctl --add` | Ya no esta soportado. |
 | Certificado personal del keychain | Sin `Extended Key Usage` de code signing. |
 | Certificado autofirmado con EKU de code signing | La clave privada necesita la contrasena del keychain, y no genera una regla que Gatekeeper reconozca. |
+
+### Firma con la identidad de Apple del llavero
+
+El despliegue usa una identidad de firma de codigo del llavero si la
+encuentra, en lugar de firmar siempre ad hoc.  La busqueda es por
+nombre, y en este equipo encuentra:
+
+```text
+Apple Development: Ion Jaureguialzo Sarasola (CN85Y9YK74)
+  OU=RSEH385M54
+  Extended Key Usage: Code Signing
+```
+
+El Team ID por si solo no basta: hace falta el certificado *Developer ID
+Application* con su clave privada, que es el unico autorizado para
+distribuir fuera del equipo de desarrollo.  Con un certificado de
+desarrollo, la evaluacion de Gatekeeper sigue siendo negativa:
+
+```text
+$ spctl --assess --type execute -v Veyon.app
+Veyon.app: rejected
+```
+
+Ademas, con el atributo de quarantine presente, el sistema muestra un
+dialogo de aviso y el proceso se queda esperando a que el usuario lo
+conteste.  Por eso el atributo de quarantine se quita **siempre**, tanto
+con firma de Apple como ad hoc.
+
+Tres detalles de la firma que hay que respetar:
+
+1. **No usar `codesign --deep`**: firma el contenido con la misma
+   identidad, pero no repara lo que ya estaba firmado con otra, y el
+   bundle acaba con «nested code is modified or invalid».
+2. **Firmar cada framework por su directorio**, no por su binario: los
+   frameworks de Qt tienen enlaces simbolicos de version, y firmar solo
+   el binario deja la firma invalida.
+3. **No activar el hardened runtime**: los plugins se cargan con
+   `dlopen()` y tienen que compartir Team ID con el proceso principal.
+   Con `--options runtime` el complemento de plataforma no se carga y el
+   programa termina con «PlatformPluginManager: no platform plugin
+   available!», un mensaje que parece un fallo del plugin y no lo es.

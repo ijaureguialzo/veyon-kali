@@ -1401,3 +1401,101 @@ Lo que **no** se ha hecho, y por que:
 
 Para una distribucion publica haria falta el certificado de Developer ID
 y la notarizacion, que es un camino distinto del cubierto aqui.
+
+#### 8.14.1 Firma con la identidad de Apple del llavero
+
+El despliegue busca ahora una identidad de firma de codigo en el llavero
+y la usa si la encuentra, en lugar de firmar siempre ad hoc.  La busqueda
+es por nombre, de modo que el script no depende de una identidad
+concreta:
+
+| Prioridad | Nombre buscado |
+|---|---|
+| 1 | `Developer ID Application` |
+| 2 | `Apple Development` |
+| 3 | `Mac Developer` |
+
+La identidad que hay en este equipo es:
+
+```text
+Apple Development: Ion Jaureguialzo Sarasola (CN85Y9YK74)
+  OU=RSEH385M54
+  Extended Key Usage: Code Signing
+```
+
+Con ella el bundle queda firmado con una cadena que llega hasta Apple
+Root CA:
+
+```text
+$ codesign -dv Veyon.app
+Identifier=io.veyon.veyon
+Authority=Apple Development: Ion Jaureguialzo Sarasola (CN85Y9YK74)
+Authority=Apple Worldwide Developer Relations Certification Authority
+Authority=Apple Root CA
+TeamIdentifier=RSEH385M54
+```
+
+**El Team ID no basta por si solo.**  HACE FALTA ademas el certificado
+*Developer ID Application* con su clave privada, que es el unico
+autorizado para distribuir fuera del equipo de desarrollo.  Con un
+certificado de desarrollo, la evaluacion de Gatekeeper sigue siendo
+negativa:
+
+```text
+$ spctl --assess --type execute -v Veyon.app
+Veyon.app: rejected
+```
+
+Y lo que es peor, con el atributo de quarantine presente, el sistema
+muestra un dialogo de aviso y el proceso se queda esperando a que el
+usuario lo conteste, en lugar de matar el proceso de inmediato:
+
+```text
+CoreServicesUIAgent   (activo, esperando)
+$ ./Veyon.app/Contents/MacOS/veyon-cli about
+(sin salida, se queda esperando)
+```
+
+Por eso el atributo de quarantine se quita **siempre**, tanto con firma
+de Apple como ad hoc.  La firma de Apple aporta que el bundle sea
+verificable y que la firma sea coherente con el Team ID, pero el
+atributo se sigue quitando, porque es lo unico que garantiza que la
+aplicacion arranque sin intervencion del usuario.
+
+#### 8.14.2 Detalles de la firma que hay que respetar
+
+Tres detalles que hacen que la firma falle, y que seablemente no son
+evidentes:
+
+1. **No usar `codesign --deep`.**  Firma el contenido con la misma
+   identidad, pero no repara el contenido que ya estaba firmado con otra
+   identidad distinta.  El resultado es un bundle que
+   `codesign --verify --deep --strict` rechaza con «nested code is
+   modified or invalid».
+
+2. **Firmar cada framework por su directorio, no por su binario.**  Los
+   frameworks de Qt tienen una estructura de versiones con enlaces
+   simbolicos (`Versions/A`, `Versions/Current` y el `QtGui` de la raiz).
+   Firmar solo el binario deja la firma invalida:
+
+   ```text
+   In subcomponent: .../Veyon.app/Contents/Frameworks/QtGui.framework
+   In architecture: arm64
+   Veyon.app: invalid signature (code or signature have been modified)
+   ```
+
+3. **No activar el hardened runtime** (`--options runtime`).  Los
+   plugins se cargan con `dlopen()` y forman parte del proceso, de modo
+   que tienen que compartir Team ID con el proceso principal.  La
+   comprobacion se hace en tiempo de ejecucion, y con el hardened
+   runtime el complemento de plataforma no llega a cargarse:
+
+   ```text
+   PlatformPluginManager: no platform plugin available!
+   ```
+
+   Ademas, el mensaje de error engania: parece un fallo del plugin de
+   plataforma macOS, cuando en realidad es consecuencia de la firma.
+
+La firma que funciona es, por tanto, sin hardened runtime, de dentro
+hacia fuera, y con los frameworks firmados por su directorio.
