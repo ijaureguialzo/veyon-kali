@@ -1,5 +1,101 @@
+diff --git a/cmake/modules/MacOSIcon.cmake b/cmake/modules/MacOSIcon.cmake
+new file mode 100644
+index 000000000..b57cf4fc7
+--- /dev/null
++++ b/cmake/modules/MacOSIcon.cmake
+@@ -0,0 +1,90 @@
++# MacOSIcon.cmake - Generate the application icon of the macOS bundle.
++#
++# The icon is built from the vector source of the master application
++# (master/data/veyon-master.svg), so that it stays sharp at every size the
++# Finder and the Dock request.
++#
++# macOS expects an .icns file inside Contents/Resources, whose name is
++# referenced by the CFBundleIconFile key of the Info.plist.
++#
++# The intermediate PNG files are written to the iconset directory with the
++# names that "iconutil" requires.  The tool is part of the Xcode command
++# line tools, so it is always available on a machine that can build a
++# bundle.
++#
++# Required variables:
++#   MACOS_BUNDLE_NAME      - name of the bundle, used for the file names
++#   MACOS_BUNDLE_ICON_SRC  - path to the vector icon source
++
++set(icon_src "${MACOS_BUNDLE_ICON_SRC}")
++set(iconset_dir "${CMAKE_BINARY_DIR}/${MACOS_BUNDLE_NAME}.iconset")
++set(icns_file "${CMAKE_BINARY_DIR}/${MACOS_BUNDLE_NAME}.app/Contents/Resources/${MACOS_BUNDLE_NAME}.icns")
++
++if(NOT EXISTS "${icon_src}")
++	message(FATAL_ERROR "El icono de la aplicacion no existe: ${icon_src}")
++endif()
++
++# Se comprueba que las herramientas necesarias esten disponibles antes de
++# perder tiempo generando las imagenes.
++find_program(RESVG_CONVERT rsvg-convert)
++find_program(ICONUTIL iconutil)
++
++if(NOT RESVG_CONVERT OR NOT ICONUTIL)
++	message(FATAL_ERROR
++		"Se necesitan rsvg-convert e iconutil para generar el icono de la aplicacion. "
++		"rsvg-convert viene de librsvg (brew install librsvg) e iconutil viene de las "
++		"Xcode command line tools.")
++endif()
++
++# Los tamanos que exige el formato .icns, con el sufijo @2x para las
++# variantes de alta resolucion.
++set(icon_sizes 16 32 64 128 256 512)
++
++# Los comandos se acumulan en una lista de argumentos de cmake -E, porque
++# un custom command conMany argumentos tiene problemas con el escapado de
++# las rutas.
++set(icon_script "${CMAKE_BINARY_DIR}/generate-macos-icon.cmake")
++
++file(WRITE "${icon_script}" "# Generado por MacOSIcon.cmake, no editar.\n")
++file(APPEND "${icon_script}" "set(iconset_dir \"${iconset_dir}\")\n")
++file(APPEND "${icon_script}" "set(icns_file \"${icns_file}\")\n")
++file(APPEND "${icon_script}" "file(REMOVE_RECURSE \"\${iconset_dir}\")\n")
++file(APPEND "${icon_script}" "file(MAKE_DIRECTORY \"\${iconset_dir}\")\n")
++
++foreach(size ${icon_sizes})
++	file(APPEND "${icon_script}"
++		"execute_process(COMMAND \"${RESVG_CONVERT}\" -w ${size} -h ${size} \"${icon_src}\"
++			-o \"\${iconset_dir}/icon_${size}x${size}.png\" RESULT_VARIABLE rc)\n")
++	file(APPEND "${icon_script}" "if(NOT rc EQUAL 0)\n\tmessage(FATAL_ERROR \"No se ha podido generar el icono de ${size} px\")\nendif()\n")
++endforeach()
++
++# Las variantes @2x duplican la resolucion del tamano base.
++foreach(size 16 32 128 256 512)
++	math(EXPR highres_size "${size} * 2")
++	set(highres_name "icon_${size}x${size}@2x.png")
++	file(APPEND "${icon_script}"
++		"execute_process(COMMAND \"${RESVG_CONVERT}\" -w ${highres_size} -h ${highres_size} \"${icon_src}\"
++			-o \"\${iconset_dir}/${highres_name}\" RESULT_VARIABLE rc)\n")
++	file(APPEND "${icon_script}" "if(NOT rc EQUAL 0)\n\tmessage(FATAL_ERROR \"No se ha podido generar el icono de ${size} px @2x\")\nendif()\n")
++endforeach()
++
++file(APPEND "${icon_script}" "get_filename_component(icns_dir \"\${icns_file}\" DIRECTORY)\n")
++file(APPEND "${icon_script}" "file(MAKE_DIRECTORY \"\${icns_dir}\")\n")
++# Si el fichero ya existe como directorio, iconutil no puede escribirlo.
++file(APPEND "${icon_script}" "if(IS_DIRECTORY \"\${icns_file}\")\n\tfile(REMOVE_RECURSE \"\${icns_file}\")\nendif()\n")
++file(APPEND "${icon_script}"
++	"execute_process(COMMAND \"${ICONUTIL}\" -c icns \"\${iconset_dir}\" -o \"\${icns_file}\" RESULT_VARIABLE rc)\n")
++file(APPEND "${icon_script}" "if(NOT rc EQUAL 0)\n\tmessage(FATAL_ERROR \"iconutil no ha podido crear el fichero .icns\")\nendif()\n")
++file(APPEND "${icon_script}" "file(REMOVE_RECURSE \"\${iconset_dir}\")\n")
++
++# El icono se escribe antes de generar el Info.plist, porque este ultimo
++# lo referencia.
++add_custom_command(
++	OUTPUT "${icns_file}"
++	COMMAND ${CMAKE_COMMAND} -P "${icon_script}"
++	DEPENDS "${icon_src}" "${icon_script}"
++	COMMENT "Generating the macOS application icon"
++	VERBATIM
++	)
++
++add_custom_target(macos_bundle_icon DEPENDS "${icns_file}")
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 3b0234aaf..8a1838d34 100644
+index 2e2017d72..e4bbbefb8 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -137,6 +137,11 @@ else()
@@ -47,7 +143,7 @@ index 3b0234aaf..8a1838d34 100644
  
  
  include(cmake/CPackDefinitions.cmake)
-@@ -388,3 +417,64 @@ if(VEYON_BUILD_ANDROID)
+@@ -388,3 +417,74 @@ if(VEYON_BUILD_ANDROID)
  
  	add_dependencies(create-apk-veyon-master prepare-apk)
  endif()
@@ -60,12 +156,22 @@ index 3b0234aaf..8a1838d34 100644
 +	set(MACOS_BUNDLE_BUNDLE_ID "io.veyon.veyon")
 +	set(MACOS_BUNDLE_VERSION "${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}")
 +	set(MACOS_BUNDLE_MIN_SYSTEM_VERSION "${CMAKE_OSX_DEPLOYMENT_TARGET}")
++	set(MACOS_BUNDLE_ICON_SRC "${CMAKE_SOURCE_DIR}/master/data/veyon-master.svg")
++
++	# El icono de la aplicación se genera a partir del fuente vectorial del
++	# master, de modo que sea nítido en todos los tamaños que piden el
++	# Finder y el Dock.
++	include(cmake/modules/MacOSIcon.cmake)
++	add_dependencies(macos_bundle_icon veyon-master)
 +
 +	add_custom_target(macos_bundle
 +		COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_BINARY_DIR}/${MACOS_BUNDLE_NAME}.app"
 +		COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/${MACOS_BUNDLE_NAME}.app/Contents/MacOS"
 +		COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/${MACOS_BUNDLE_NAME}.app/Contents/Resources/lib"
 +		COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/${MACOS_BUNDLE_NAME}.app/Contents/PlugIns"
++		# El icono se genera dentro del bundle, porque este target borra
++		# el bundle entero al principio.
++		COMMAND ${CMAKE_COMMAND} -P "${CMAKE_BINARY_DIR}/generate-macos-icon.cmake"
 +		COMMAND ${CMAKE_COMMAND} -E copy
 +			"$<TARGET_FILE:veyon-master>"
 +			"$<TARGET_FILE:veyon-cli>"
@@ -93,7 +199,7 @@ index 3b0234aaf..8a1838d34 100644
 +		VERBATIM
 +		)
 +
-+	add_dependencies(macos_bundle veyon-master veyon-cli veyon-configurator veyon-server veyon-service veyon-core macos-platform)
++	add_dependencies(macos_bundle veyon-master veyon-cli veyon-configurator veyon-server veyon-service veyon-core macos-platform macos_bundle_icon)
 +
 +	# The plugins are loaded by the executables, so they need a runpath that
 +	# points to the core library and to the frameworks of the bundle.
