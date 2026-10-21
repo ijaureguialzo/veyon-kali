@@ -151,7 +151,15 @@ rewrite_homebrew_paths() {
     for dep in $deps; do
         case "$dep" in
             /opt/homebrew/*|/usr/local/*)
-                local rel fw base fwdir fver
+                local rel base fwdir fver
+                # Las variables se reinician en cada iteración: si no, el
+                # valor de "fw" de la dependencia anterior se reutiliza y
+                # una dylib se trata como si fuera un framework, con lo
+                # que su ruta absoluta no se reescribe y el binario acaba
+                # enlazado con la copia de Qt de Homebrew.
+                fw=""
+                base=""
+                rel=""
                 case "$dep" in
                     *.framework/Versions/*)
                         # /opt/.../QtCore.framework/Versions/A/QtCore
@@ -564,6 +572,15 @@ if not candidates:
 
 for match, text in candidates:
     # Sustitución por una ruta imposible, manteniendo la longitud exacta.
+    #
+    # El relleno NO puede hacerse con bytes nulos.  La ruta es un literal
+    # UTF-16LE con longitud explícita, así que Qt la lee completa e
+    # conserva los caracteres nulos intercalados.  Esa cadena con bytes
+    # nulos embebidos hace que Qt rechace el nombre de fichero y emita el
+    # aviso "Broken filename passed to function" cada vez que QCA explora
+    # las rutas de sus providers.  Rellenar con espacios mantiene la
+    # longitud y deja una ruta limpia, que además sigue siendo
+    # inexistente y por tanto la descarta QCA.
     replacement = "/nonexistent-veyon-qca-plugins"
     if len(replacement) > len(text):
         replacement = replacement[:len(text)]
