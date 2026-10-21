@@ -1,60 +1,9 @@
-diff --git a/plugins/vncserver/screencapturekit/CMakeLists.txt b/plugins/vncserver/screencapturekit/CMakeLists.txt
-new file mode 100644
-index 000000000..53b332b35
---- /dev/null
-+++ b/plugins/vncserver/screencapturekit/CMakeLists.txt
-@@ -0,0 +1,45 @@
-+include(BuildVeyonPlugin)
-+
-+build_veyon_plugin(screencapturekit-vnc-server
-+	NAME ScreenCaptureKitVncServer
-+	SOURCES
-+	ScreenCaptureKitCapturer.h
-+	ScreenCaptureKitCapturer.mm
-+	ScreenCaptureKitConfiguration.h
-+	ScreenCaptureKitVncServer.cpp
-+	ScreenCaptureKitVncServer.h
-+	ScreenCaptureKitVncServerConfigurationWidget.cpp
-+	ScreenCaptureKitVncServerConfigurationWidget.h
-+	ScreenCaptureKitVncServerConfigurationWidget.ui
-+	)
-+
-+# The screen capture uses the ScreenCaptureKit framework, which is an
-+# Objective-C API.  The implementation is therefore compiled as Objective-C++.
-+#
-+# The shared precompiled header is built as plain C++ and therefore cannot be
-+# reused from Objective-C++ translation units, so the precompiled headers and
-+# the unity build have to be disabled for them.
-+set_source_files_properties(
-+	ScreenCaptureKitCapturer.mm
-+	PROPERTIES
-+		COMPILE_FLAGS "-x objective-c++"
-+		SKIP_UNITY_BUILD_INCLUSION TRUE
-+		SKIP_PRECOMPILE_HEADERS TRUE
-+)
-+
-+target_link_libraries(screencapturekit-vnc-server PRIVATE
-+	Qt${QT_MAJOR_VERSION}::Widgets
-+	"-framework ScreenCaptureKit"
-+	"-framework AVFoundation"
-+	"-framework CoreMedia"
-+	"-framework CoreVideo"
-+	"-framework CoreGraphics"
-+)
-+
-+if(WITH_BUNDLED_LIBVNC)
-+	target_link_libraries(screencapturekit-vnc-server PRIVATE vncserver)
-+else()
-+	target_link_libraries(screencapturekit-vnc-server PRIVATE LibVNC::LibVNCServer)
-+endif()
-+
-+target_compile_options(screencapturekit-vnc-server PRIVATE -Wno-parentheses)
 diff --git a/plugins/vncserver/screencapturekit/ScreenCaptureKitCapturer.h b/plugins/vncserver/screencapturekit/ScreenCaptureKitCapturer.h
 new file mode 100644
-index 000000000..ed65d7599
+index 000000000..433969993
 --- /dev/null
 +++ b/plugins/vncserver/screencapturekit/ScreenCaptureKitCapturer.h
-@@ -0,0 +1,193 @@
+@@ -0,0 +1,204 @@
 +/*
 + * ScreenCaptureKitCapturer.h - declaration of ScreenCaptureKitCapturer class
 + *
@@ -216,6 +165,17 @@ index 000000000..ed65d7599
 +	 */
 +	void captureError( const QString& message );
 +
++public Q_SLOTS:
++	/*!
++	 * \brief Emits the frameCaptured() signal
++	 *
++	 * The frames are delivered by ScreenCaptureKit in a queue of its own.
++	 * The notification of the receivers has to happen in the thread of the
++	 * capturer, so the callback of the queue only schedules this slot,
++	 * which then emits the signal.
++	 */
++	void notifyFrameCaptured();
++
 +private:
 +	/*!
 +	 * \brief The state of a single captured display
@@ -250,10 +210,10 @@ index 000000000..ed65d7599
 +};
 diff --git a/plugins/vncserver/screencapturekit/ScreenCaptureKitCapturer.mm b/plugins/vncserver/screencapturekit/ScreenCaptureKitCapturer.mm
 new file mode 100644
-index 000000000..895d4f4d1
+index 000000000..8ec54eb2b
 --- /dev/null
 +++ b/plugins/vncserver/screencapturekit/ScreenCaptureKitCapturer.mm
-@@ -0,0 +1,710 @@
+@@ -0,0 +1,751 @@
 +/*
 + * ScreenCaptureKitCapturer.mm - implementation of ScreenCaptureKitCapturer class
 + *
@@ -280,7 +240,7 @@ index 000000000..895d4f4d1
 +
 +#include "ScreenCaptureKitCapturer.h"
 +
-+#include "VeyonCore.h"
++#include "Logger.h"
 +
 +// ScreenCaptureKit is only available on macOS 13 and later.  The whole
 +// implementation is therefore guarded, so that the plugin can still be
@@ -325,12 +285,14 @@ index 000000000..895d4f4d1
 +{
 +	std::mutex* m_frameMutex;
 +	QImage* m_displayFrames;
++	bool* m_newFrame;
 +	int m_displayIndex;
 +	ScreenCaptureKitCapturer* m_capturer;
 +}
 +
 +- (instancetype)initWithFrameMutex: (std::mutex*) frameMutex
 +					 displayFrames: (QImage*) displayFrames
++						 newFrameFlag: (bool*) newFrameFlag
 +					  displayIndex: (int) displayIndex
 +						   capturer: (ScreenCaptureKitCapturer*) capturer;
 +
@@ -340,6 +302,7 @@ index 000000000..895d4f4d1
 +
 +- (instancetype)initWithFrameMutex: (std::mutex*) frameMutex
 +					 displayFrames: (QImage*) displayFrames
++						 newFrameFlag: (bool*) newFrameFlag
 +					  displayIndex: (int) displayIndex
 +						   capturer: (ScreenCaptureKitCapturer*) capturer
 +{
@@ -347,6 +310,7 @@ index 000000000..895d4f4d1
 +	{
 +		m_frameMutex = frameMutex;
 +		m_displayFrames = displayFrames;
++		m_newFrame = newFrameFlag;
 +		m_displayIndex = displayIndex;
 +		m_capturer = capturer;
 +	}
@@ -399,6 +363,14 @@ index 000000000..895d4f4d1
 +	{
 +		std::lock_guard<std::mutex> lock( *m_frameMutex );
 +		m_displayFrames[ m_displayIndex ] = copy;
++
++		// The flag is raised right here, in the thread that delivers the
++		// frame.  The VNC server thread does not run an event loop, so a
++		// queued slot invocation would never be processed there.
++		if( m_newFrame != nullptr )
++		{
++			*m_newFrame = true;
++		}
 +	}
 +
 +	if( m_capturer != nullptr )
@@ -407,7 +379,15 @@ index 000000000..895d4f4d1
 +		// are notified in their own thread.  The signal is invoked through
 +		// the meta object system, because the "emit" macro of Qt is not
 +		// available in Objective-C++ translation units.
-+		QMetaObject::invokeMethod( m_capturer, SIGNAL( frameCaptured() ) );
++		//
++		// A slot is invoked and not the signal itself: the signals are not
++		// part of the table of the invokable methods of the meta object,
++		// so an invocation of the signal fails with "No such method".  The
++		// slot emits the signal in the thread of the capturer.
++		//
++		// The name is given without the parameter list, because Qt 6 only
++		// accepts the plain name of the method in this overload.
++		QMetaObject::invokeMethod( m_capturer, "notifyFrameCaptured", Qt::QueuedConnection );
 +	}
 +}
 +
@@ -622,6 +602,7 @@ index 000000000..895d4f4d1
 +		ScreenCaptureKitStreamOutput* output =
 +				[[ScreenCaptureKitStreamOutput alloc] initWithFrameMutex: &m_frameMutex
 +														 displayFrames: m_displayFrames.data()
++														 newFrameFlag: &m_newFrame
 +													  displayIndex: i
 +														   capturer: this];
 +
@@ -874,6 +855,16 @@ index 000000000..895d4f4d1
 +	return m_errorMessage;
 +}
 +
++
++
++void ScreenCaptureKitCapturer::notifyFrameCaptured()
++{
++	// The new frame flag is raised by the callback of the capture queue,
++	// because the VNC server thread does not run an event loop and would
++	// never process a queued invocation.
++	Q_EMIT frameCaptured();
++}
++
 +#else // ! VEYON_SCREENCAPTUREKIT_AVAILABLE
 +
 +// The whole implementation is not available on systems without
@@ -961,6 +952,16 @@ index 000000000..895d4f4d1
 +QString ScreenCaptureKitCapturer::lastError() const
 +{
 +	return m_errorMessage;
++}
++
++
++
++void ScreenCaptureKitCapturer::notifyFrameCaptured()
++{
++	// The new frame flag is raised by the callback of the capture queue,
++	// because the VNC server thread does not run an event loop and would
++	// never process a queued invocation.
++	Q_EMIT frameCaptured();
 +}
 +
 +#endif // VEYON_SCREENCAPTUREKIT_AVAILABLE
@@ -1301,10 +1302,10 @@ index 000000000..ad15a1a25
 +IMPLEMENT_CONFIG_PROXY(ScreenCaptureKitConfiguration)
 diff --git a/plugins/vncserver/screencapturekit/ScreenCaptureKitVncServer.h b/plugins/vncserver/screencapturekit/ScreenCaptureKitVncServer.h
 new file mode 100644
-index 000000000..f1b4eed77
+index 000000000..63fa96169
 --- /dev/null
 +++ b/plugins/vncserver/screencapturekit/ScreenCaptureKitVncServer.h
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,132 @@
 +/*
 + * ScreenCaptureKitVncServer.h - declaration of ScreenCaptureKitVncServer class
 + *
@@ -1388,8 +1389,10 @@ index 000000000..f1b4eed77
 +	Plugin::Flags flags() const override
 +	{
 +		// The ScreenCaptureKit backend is the native screen capture
-+		// implementation of macOS, so it is the default one there.
-+		return Plugin::ProvidesDefaultImplementation;
++		// implementation of macOS, so it is the preferred one there.  The
++		// portable headless backend stays available as a fallback for
++		// machines without an active display.
++		return Plugin::Flags( Plugin::ProvidesDefaultImplementation ) | Plugin::Flags( Plugin::PreferredDefaultImplementation );
 +	}
 +
 +	QStringList supportedSessionTypes() const override
@@ -1675,7 +1678,7 @@ index 000000000..3b95f862b
 + <resources/>
 + <connections/>
 +</ui>
-diff --git a/Users/widemos/proyectos/veyon-kali/build/veyon/plugins/vncserver/CMakeLists.txt b/plugins/vncserver/CMakeLists.txt
+diff --git a/plugins/vncserver/CMakeLists.txt b/plugins/vncserver/CMakeLists.txt
 index 52f183537..81d6a4dd4 100644
 --- a/plugins/vncserver/CMakeLists.txt
 +++ b/plugins/vncserver/CMakeLists.txt
@@ -1689,7 +1692,7 @@ index 52f183537..81d6a4dd4 100644
 +
  add_subdirectory(external)
  add_subdirectory(headless)
-diff --git a/Users/widemos/proyectos/veyon-kali/build/veyon/plugins/vncserver/headless/HeadlessVncServer.h b/plugins/vncserver/headless/HeadlessVncServer.h
+diff --git a/plugins/vncserver/headless/HeadlessVncServer.h b/plugins/vncserver/headless/HeadlessVncServer.h
 index 2676f13ca..3ac7fe17f 100644
 --- a/plugins/vncserver/headless/HeadlessVncServer.h
 +++ b/plugins/vncserver/headless/HeadlessVncServer.h
@@ -1707,3 +1710,54 @@ index 2676f13ca..3ac7fe17f 100644
  	}
  
  	virtual QStringList supportedSessionTypes() const override
+diff --git a/var/folders/h9/jxb3fz6n0l58hvjmxnhqkxvw0000gn/T/tmplv5xls7d.tmp b/var/folders/h9/jxb3fz6n0l58hvjmxnhqkxvw0000gn/T/tmplv5xls7d.tmp
+new file mode 100644
+index 000000000..53b332b35
+--- /dev/null
++++ b/var/folders/h9/jxb3fz6n0l58hvjmxnhqkxvw0000gn/T/tmplv5xls7d.tmp
+@@ -0,0 +1,45 @@
++include(BuildVeyonPlugin)
++
++build_veyon_plugin(screencapturekit-vnc-server
++	NAME ScreenCaptureKitVncServer
++	SOURCES
++	ScreenCaptureKitCapturer.h
++	ScreenCaptureKitCapturer.mm
++	ScreenCaptureKitConfiguration.h
++	ScreenCaptureKitVncServer.cpp
++	ScreenCaptureKitVncServer.h
++	ScreenCaptureKitVncServerConfigurationWidget.cpp
++	ScreenCaptureKitVncServerConfigurationWidget.h
++	ScreenCaptureKitVncServerConfigurationWidget.ui
++	)
++
++# The screen capture uses the ScreenCaptureKit framework, which is an
++# Objective-C API.  The implementation is therefore compiled as Objective-C++.
++#
++# The shared precompiled header is built as plain C++ and therefore cannot be
++# reused from Objective-C++ translation units, so the precompiled headers and
++# the unity build have to be disabled for them.
++set_source_files_properties(
++	ScreenCaptureKitCapturer.mm
++	PROPERTIES
++		COMPILE_FLAGS "-x objective-c++"
++		SKIP_UNITY_BUILD_INCLUSION TRUE
++		SKIP_PRECOMPILE_HEADERS TRUE
++)
++
++target_link_libraries(screencapturekit-vnc-server PRIVATE
++	Qt${QT_MAJOR_VERSION}::Widgets
++	"-framework ScreenCaptureKit"
++	"-framework AVFoundation"
++	"-framework CoreMedia"
++	"-framework CoreVideo"
++	"-framework CoreGraphics"
++)
++
++if(WITH_BUNDLED_LIBVNC)
++	target_link_libraries(screencapturekit-vnc-server PRIVATE vncserver)
++else()
++	target_link_libraries(screencapturekit-vnc-server PRIVATE LibVNC::LibVNCServer)
++endif()
++
++target_compile_options(screencapturekit-vnc-server PRIVATE -Wno-parentheses)
