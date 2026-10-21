@@ -51,10 +51,10 @@ index 000000000..53b332b35
 +target_compile_options(screencapturekit-vnc-server PRIVATE -Wno-parentheses)
 diff --git a/plugins/vncserver/screencapturekit/ScreenCaptureKitCapturer.h b/plugins/vncserver/screencapturekit/ScreenCaptureKitCapturer.h
 new file mode 100644
-index 000000000..6b668b3a6
+index 000000000..ed65d7599
 --- /dev/null
 +++ b/plugins/vncserver/screencapturekit/ScreenCaptureKitCapturer.h
-@@ -0,0 +1,157 @@
+@@ -0,0 +1,193 @@
 +/*
 + * ScreenCaptureKitCapturer.h - declaration of ScreenCaptureKitCapturer class
 + *
@@ -83,8 +83,10 @@ index 000000000..6b668b3a6
 +
 +#include <QImage>
 +#include <QObject>
++#include <QPoint>
 +#include <QSize>
 +#include <QString>
++#include <QVector>
 +
 +#include <mutex>
 +
@@ -112,6 +114,11 @@ index 000000000..6b668b3a6
 + * The class requires the "Screen Recording" privacy permission.  Without
 + * it, ScreenCaptureKit refuses to provide any content and reports an
 + * error.
++ *
++ * ScreenCaptureKit captures one display per stream.  When several displays
++ * are combined, one stream is started for each of them and the individual
++ * frames are composed into a single virtual desktop, whose geometry matches
++ * the arrangement of the physical displays.
 + */
 +class VEYON_SCREENCAPTUREKIT_EXPORT ScreenCaptureKitCapturer : public QObject
 +{
@@ -140,6 +147,16 @@ index 000000000..6b668b3a6
 +	 * \brief Returns whether the capture is currently running
 +	 */
 +	bool isRunning() const;
++
++	/*!
++	 * \brief Composes the frames of the displays into the virtual desktop
++	 *
++	 * The frames of the individual displays are combined into a single
++	 * image, whose size is the size of the virtual desktop.  The call has
++	 * to be made after the new frame flag has been reset and before the
++	 * current frame is read.
++	 */
++	void composeFrame();
 +
 +	/*!
 +	 * \brief Returns the last captured frame
@@ -200,24 +217,43 @@ index 000000000..6b668b3a6
 +	void captureError( const QString& message );
 +
 +private:
++	/*!
++	 * \brief The state of a single captured display
++	 *
++	 * Every display is captured by its own stream, so that the frames of
++	 * several displays can be combined into one virtual desktop.
++	 */
++	struct DisplayState
++	{
++		void* stream{nullptr};
++		void* contentFilter{nullptr};
++		void* streamConfiguration{nullptr};
++		void* streamOutput{nullptr};
++
++		// The position of the display inside the virtual desktop.
++		QPoint position;
++		QSize size;
++	};
++
 +	mutable std::mutex m_frameMutex;
 +	QImage m_frame;
 +	QSize m_framebufferSize;
 +	bool m_newFrame{false};
 +	QString m_errorMessage;
 +
-+	void* m_stream{nullptr};
-+	void* m_contentFilter{nullptr};
-+	void* m_streamConfiguration{nullptr};
-+	void* m_streamOutput{nullptr};
++	// The frame of every single display, before they are composed.
++	QVector<QImage> m_displayFrames;
++
++	QVector<DisplayState> m_displays;
++
 +	void* m_callbackQueue{nullptr};
 +};
 diff --git a/plugins/vncserver/screencapturekit/ScreenCaptureKitCapturer.mm b/plugins/vncserver/screencapturekit/ScreenCaptureKitCapturer.mm
 new file mode 100644
-index 000000000..0d6f123d2
+index 000000000..895d4f4d1
 --- /dev/null
 +++ b/plugins/vncserver/screencapturekit/ScreenCaptureKitCapturer.mm
-@@ -0,0 +1,584 @@
+@@ -0,0 +1,710 @@
 +/*
 + * ScreenCaptureKitCapturer.mm - implementation of ScreenCaptureKitCapturer class
 + *
@@ -271,6 +307,8 @@ index 000000000..0d6f123d2
 +
 +#include <mutex>
 +
++#include <cstring>
++
 +namespace vnc {
 +
 +/*!
@@ -286,16 +324,14 @@ index 000000000..0d6f123d2
 +@interface ScreenCaptureKitStreamOutput : NSObject < SCStreamOutput >
 +{
 +	std::mutex* m_frameMutex;
-+	QImage* m_frame;
-+	QSize* m_framebufferSize;
-+	bool* m_newFrame;
++	QImage* m_displayFrames;
++	int m_displayIndex;
 +	ScreenCaptureKitCapturer* m_capturer;
 +}
 +
 +- (instancetype)initWithFrameMutex: (std::mutex*) frameMutex
-+							  frame: (QImage*) frame
-+					   framebufferSize: (QSize*) framebufferSize
-+						  newFrame: (bool*) newFrame
++					 displayFrames: (QImage*) displayFrames
++					  displayIndex: (int) displayIndex
 +						   capturer: (ScreenCaptureKitCapturer*) capturer;
 +
 +@end
@@ -303,17 +339,15 @@ index 000000000..0d6f123d2
 +@implementation ScreenCaptureKitStreamOutput
 +
 +- (instancetype)initWithFrameMutex: (std::mutex*) frameMutex
-+							  frame: (QImage*) frame
-+					   framebufferSize: (QSize*) framebufferSize
-+						  newFrame: (bool*) newFrame
++					 displayFrames: (QImage*) displayFrames
++					  displayIndex: (int) displayIndex
 +						   capturer: (ScreenCaptureKitCapturer*) capturer
 +{
 +	if( (self = [super init]) )
 +	{
 +		m_frameMutex = frameMutex;
-+		m_frame = frame;
-+		m_framebufferSize = framebufferSize;
-+		m_newFrame = newFrame;
++		m_displayFrames = displayFrames;
++		m_displayIndex = displayIndex;
 +		m_capturer = capturer;
 +	}
 +	return self;
@@ -342,13 +376,15 @@ index 000000000..0d6f123d2
 +		return;
 +	}
 +
++	// The base address has to stay valid while the frame is copied, so the
++	// buffer is only unlocked after the copy has been made.
 +	CVPixelBufferLockBaseAddress( imageBuffer, kCVPixelBufferLock_ReadOnly );
 +	const auto baseAddress = CVPixelBufferGetBaseAddress( imageBuffer );
 +	const auto bytesPerRow = CVPixelBufferGetBytesPerRow( imageBuffer );
-+	CVPixelBufferUnlockBaseAddress( imageBuffer, kCVPixelBufferLock_ReadOnly );
 +
 +	if( baseAddress == nullptr || bytesPerRow <= 0 )
 +	{
++		CVPixelBufferUnlockBaseAddress( imageBuffer, kCVPixelBufferLock_ReadOnly );
 +		return;
 +	}
 +
@@ -356,12 +392,13 @@ index 000000000..0d6f123d2
 +	// memory layout as QImage::Format_RGB32 on little endian machines.
 +	const QImage source( static_cast<const uchar *>( baseAddress ),
 +						 width, height, static_cast<int>( bytesPerRow ), QImage::Format_RGB32 );
++	const QImage copy = source.copy();
++
++	CVPixelBufferUnlockBaseAddress( imageBuffer, kCVPixelBufferLock_ReadOnly );
 +
 +	{
 +		std::lock_guard<std::mutex> lock( *m_frameMutex );
-+		*m_frame = source.copy();
-+		*m_framebufferSize = source.size();
-+		*m_newFrame = true;
++		m_displayFrames[ m_displayIndex ] = copy;
 +	}
 +
 +	if( m_capturer != nullptr )
@@ -458,8 +495,6 @@ index 000000000..0d6f123d2
 +		return false;
 +	}
 +
-+	SCDisplay* targetDisplay = nil;
-+
 +	if( shareableContent.displays.count == 0 )
 +	{
 +		// ScreenCaptureKit only reports the displays that are currently
@@ -475,6 +510,11 @@ index 000000000..0d6f123d2
 +		return false;
 +	}
 +
++	// The displays that are going to be captured.  ScreenCaptureKit
++	// captures one display per stream, so every selected display needs its
++	// own stream.
++	QVector<SCDisplay*> targetDisplays;
++
 +	if( captureAllDisplays == false )
 +	{
 +		if( displayIndex < 0 || displayIndex >= static_cast<int>( shareableContent.displays.count ) )
@@ -485,134 +525,176 @@ index 000000000..0d6f123d2
 +			[ shareableContent release ];
 +			return false;
 +		}
-+		targetDisplay = shareableContent.displays[ displayIndex ];
++		targetDisplays.append( shareableContent.displays[ displayIndex ] );
 +	}
 +	else
 +	{
-+		// ScreenCaptureKit captures one display per content filter.  When
-+		// all displays are requested, the first one is used, because it
-+		// always contains the desktop and the dock.
-+		targetDisplay = shareableContent.displays[ 0 ];
-+	}
-+
-+	// The content filter covers the whole display, including the desktop
-+	// background and the dock.
-+	SCContentFilter* contentFilter = [[SCContentFilter alloc] initWithDisplay: targetDisplay
-+																excludingWindows:@[]];
-+	m_contentFilter = contentFilter;
-+
-+	SCStreamConfiguration* streamConfiguration = [[SCStreamConfiguration alloc] init];
-+	m_streamConfiguration = streamConfiguration;
-+	streamConfiguration.capturesAudio = NO;
-+	streamConfiguration.showsCursor = YES;
-+	streamConfiguration.queueDepth = 3;
-+	streamConfiguration.minimumFrameInterval = CMTimeMake( 1, MAX( 1, framesPerSecond ) );
-+
-+	if( captureAllDisplays )
-+	{
-+		// The size of the combined desktop is the sum of the widths of all
-+		// the displays and the height of the tallest one.
-+		CGFloat totalWidth = 0;
-+		CGFloat totalHeight = 0;
++		// All the active displays are captured and combined into a single
++		// virtual desktop.
 +		for( SCDisplay* display in shareableContent.displays )
 +		{
-+			totalWidth += display.width;
-+			totalHeight = MAX( totalHeight, display.height );
++			targetDisplays.append( display );
++		}
++	}
++
++	// The geometry of the virtual desktop is calculated from the frames of
++	// the physical displays, so that the arrangement of the monitors is
++	// preserved.  The origin of the coordinate system is the top left
++	// corner of the bounding box of all the displays.
++	CGFloat boundingLeft = 0;
++	CGFloat boundingTop = 0;
++	CGFloat boundingRight = 0;
++	CGFloat boundingBottom = 0;
++
++	for( int i = 0; i < targetDisplays.count(); ++i )
++	{
++		const auto frame = targetDisplays[ i ].frame;
++		if( i == 0 )
++		{
++			boundingLeft = frame.origin.x;
++			boundingTop = frame.origin.y;
++			boundingRight = frame.origin.x + frame.size.width;
++			boundingBottom = frame.origin.y + frame.size.height;
++			continue;
 +		}
 +
-+		streamConfiguration.width = static_cast<size_t>( totalWidth );
-+		streamConfiguration.height = static_cast<size_t>( totalHeight );
-+	}
-+	else
-+	{
-+		streamConfiguration.width = static_cast<size_t>( targetDisplay.width );
-+		streamConfiguration.height = static_cast<size_t>( targetDisplay.height );
++		boundingLeft = MIN( boundingLeft, frame.origin.x );
++		boundingTop = MIN( boundingTop, frame.origin.y );
++		boundingRight = MAX( boundingRight, frame.origin.x + frame.size.width );
++		boundingBottom = MAX( boundingBottom, frame.origin.y + frame.size.height );
 +	}
 +
-+	// The frames are scaled down if they are bigger than the configured
-+	// maximum size.
++	const auto virtualWidth = static_cast<int>( boundingRight - boundingLeft );
++	const auto virtualHeight = static_cast<int>( boundingBottom - boundingTop );
++
++	// Every display is scaled by the same factor, so that the relative
++	// arrangement of the monitors is kept.
++	double scale = 1.0;
 +	if( maximumSize.isValid() && maximumSize.isEmpty() == false )
 +	{
-+		const auto width = static_cast<size_t>( streamConfiguration.width );
-+		const auto height = static_cast<size_t>( streamConfiguration.height );
-+
-+		if( width > static_cast<size_t>( maximumSize.width() ) ||
-+			height > static_cast<size_t>( maximumSize.height() ) )
++		if( virtualWidth > maximumSize.width() || virtualHeight > maximumSize.height() )
 +		{
-+			const auto scale = qMin( static_cast<double>( maximumSize.width() ) / width,
-+									 static_cast<double>( maximumSize.height() ) / height );
-+			streamConfiguration.width = static_cast<size_t>( width * scale );
-+			streamConfiguration.height = static_cast<size_t>( height * scale );
++			scale = qMin( static_cast<double>( maximumSize.width() ) / virtualWidth,
++						  static_cast<double>( maximumSize.height() ) / virtualHeight );
 +		}
 +	}
 +
-+	// BGRA is the format that matches QImage::Format_RGB32 (little endian
-+	// with the shifts 16/8/0 that libVNC expects).
-+	streamConfiguration.pixelFormat = kCVPixelFormatType_32BGRA;
++	const auto scaledWidth = qMax( 1, static_cast<int>( virtualWidth * scale ) );
++	const auto scaledHeight = qMax( 1, static_cast<int>( virtualHeight * scale ) );
 +
 +	dispatch_queue_t callbackQueue = dispatch_queue_create( "io.veyon.screencapturekit", DISPATCH_QUEUE_SERIAL );
 +	m_callbackQueue = callbackQueue;
 +
-+	SCStream* stream = [[SCStream alloc] initWithFilter: contentFilter
-+										  configuration: streamConfiguration
-+											  delegate: nil];
-+	m_stream = stream;
++	m_displays.clear();
++	m_displayFrames.clear();
++	m_displayFrames.resize( targetDisplays.count() );
 +
-+	ScreenCaptureKitStreamOutput* output =
-+			[[ScreenCaptureKitStreamOutput alloc] initWithFrameMutex: &m_frameMutex
-+															   frame: &m_frame
-+													framebufferSize: &m_framebufferSize
-+														  newFrame: &m_newFrame
-+														   capturer: this];
-+	m_streamOutput = output;
-+
-+	NSError* addOutputError = nil;
-+	[ stream addStreamOutput: output
-+						type: SCStreamOutputTypeScreen
-+		sampleHandlerQueue: callbackQueue
-+					   error: &addOutputError ];
-+
-+	if( addOutputError != nil )
++	for( int i = 0; i < targetDisplays.count(); ++i )
 +	{
-+		m_errorMessage = tr( "Could not add the screen capture output: %1" )
-+				.arg( QString::fromNSString( addOutputError.localizedDescription ) );
-+		vCritical() << m_errorMessage;
-+		[ addOutputError release ];
-+		stop();
-+		return false;
++		SCDisplay* targetDisplay = targetDisplays[ i ];
++
++		// The content filter covers the whole display, including the
++		// desktop background and the dock.
++		SCContentFilter* contentFilter = [[SCContentFilter alloc] initWithDisplay: targetDisplay
++																excludingWindows:@[]];
++
++		SCStreamConfiguration* streamConfiguration = [[SCStreamConfiguration alloc] init];
++		streamConfiguration.capturesAudio = NO;
++		streamConfiguration.showsCursor = YES;
++		streamConfiguration.queueDepth = 3;
++		streamConfiguration.minimumFrameInterval = CMTimeMake( 1, MAX( 1, framesPerSecond ) );
++
++		// The size of the captured display in the virtual desktop.
++		const auto displayWidth = qMax( 1, static_cast<int>( targetDisplay.width * scale ) );
++		const auto displayHeight = qMax( 1, static_cast<int>( targetDisplay.height * scale ) );
++
++		streamConfiguration.width = static_cast<size_t>( displayWidth );
++		streamConfiguration.height = static_cast<size_t>( displayHeight );
++
++		// BGRA is the format that matches QImage::Format_RGB32 (little endian
++		// with the shifts 16/8/0 that libVNC expects).
++		streamConfiguration.pixelFormat = kCVPixelFormatType_32BGRA;
++
++		SCStream* stream = [[SCStream alloc] initWithFilter: contentFilter
++											  configuration: streamConfiguration
++												  delegate: nil];
++
++		ScreenCaptureKitStreamOutput* output =
++				[[ScreenCaptureKitStreamOutput alloc] initWithFrameMutex: &m_frameMutex
++														 displayFrames: m_displayFrames.data()
++													  displayIndex: i
++														   capturer: this];
++
++		NSError* addOutputError = nil;
++		[ stream addStreamOutput: output
++							type: SCStreamOutputTypeScreen
++			sampleHandlerQueue: callbackQueue
++						   error: &addOutputError ];
++
++		if( addOutputError != nil )
++		{
++			m_errorMessage = tr( "Could not add the screen capture output: %1" )
++					.arg( QString::fromNSString( addOutputError.localizedDescription ) );
++			vCritical() << m_errorMessage;
++			[ addOutputError release ];
++			[ output release ];
++			[ stream release ];
++			[ streamConfiguration release ];
++			[ contentFilter release ];
++			stop();
++			return false;
++		}
++
++		DisplayState displayState;
++		displayState.stream = stream;
++		displayState.contentFilter = contentFilter;
++		displayState.streamConfiguration = streamConfiguration;
++		displayState.streamOutput = output;
++		displayState.size = QSize( displayWidth, displayHeight );
++		displayState.position = QPoint(
++					qMax( 0, static_cast<int>( ( targetDisplay.frame.origin.x - boundingLeft ) * scale ) ),
++					qMax( 0, static_cast<int>( ( targetDisplay.frame.origin.y - boundingTop ) * scale ) ) );
++
++		m_displays.append( displayState );
 +	}
++
++	// The size of the virtual desktop is the sum of the sizes of the
++	// displays, scaled down if they are bigger than the maximum size.
++	m_framebufferSize = QSize( scaledWidth, scaledHeight );
 +
 +	// The capture is started asynchronously, so the result is waited for
 +	// with a semaphore.
-+	auto startSemaphore = dispatch_semaphore_create( 0 );
-+	__block NSError* startError = nil;
-+
-+	[ stream startCaptureWithCompletionHandler: ^( NSError* error ) {
-+		startError = [ error retain ];
-+		dispatch_semaphore_signal( startSemaphore );
-+	} ];
-+
-+	dispatch_semaphore_wait( startSemaphore, dispatch_time( DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC ) );
-+	dispatch_release( startSemaphore );
-+
-+	if( startError != nil )
++	for( auto& displayState : m_displays )
 +	{
-+		m_errorMessage = tr( "Could not start the screen capture: %1" )
-+				.arg( QString::fromNSString( startError.localizedDescription ) );
-+		vCritical() << m_errorMessage;
-+		[ startError release ];
-+		stop();
-+		return false;
++		auto startSemaphore = dispatch_semaphore_create( 0 );
++		__block NSError* startError = nil;
++
++		SCStream* stream = static_cast<SCStream*>( displayState.stream );
++		[ stream startCaptureWithCompletionHandler: ^( NSError* error ) {
++			startError = [ error retain ];
++			dispatch_semaphore_signal( startSemaphore );
++		} ];
++
++		dispatch_semaphore_wait( startSemaphore, dispatch_time( DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC ) );
++		dispatch_release( startSemaphore );
++
++		if( startError != nil )
++		{
++			m_errorMessage = tr( "Could not start the screen capture: %1" )
++					.arg( QString::fromNSString( startError.localizedDescription ) );
++			vCritical() << m_errorMessage;
++			[ startError release ];
++			stop();
++			return false;
++		}
 +	}
 +
-+	[ startError release ];
-+
 +	vInfo() << "screen capture started at" << framesPerSecond << "fps,"
-+			<< static_cast<int>( streamConfiguration.width ) << "x"
-+			<< static_cast<int>( streamConfiguration.height );
++			<< m_displays.count() << "display(s),"
++			<< scaledWidth << "x" << scaledHeight;
 +
-+	// The shareable content is not needed any more, the display and the
-+	// content filter keep the required information.
++	// The shareable content is not needed any more, the displays and the
++	// content filters keep the required information.
 +	[ contentError release ];
 +	[ shareableContent release ];
 +
@@ -623,41 +705,47 @@ index 000000000..0d6f123d2
 +
 +void ScreenCaptureKitCapturer::stop()
 +{
-+	if( m_stream != nullptr )
++	for( auto& displayState : m_displays )
 +	{
-+		SCStream* stream = static_cast<SCStream*>( m_stream );
++		if( displayState.stream != nullptr )
++		{
++			SCStream* stream = static_cast<SCStream*>( displayState.stream );
 +
-+		auto semaphore = dispatch_semaphore_create( 0 );
-+		[ stream stopCaptureWithCompletionHandler: ^( NSError* error ) {
-+			Q_UNUSED( error )
-+			dispatch_semaphore_signal( semaphore );
-+		} ];
-+		dispatch_semaphore_wait( semaphore, dispatch_time( DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC ) );
-+		dispatch_release( semaphore );
++			auto semaphore = dispatch_semaphore_create( 0 );
++			[ stream stopCaptureWithCompletionHandler: ^( NSError* error ) {
++				Q_UNUSED( error )
++				dispatch_semaphore_signal( semaphore );
++			} ];
++			dispatch_semaphore_wait( semaphore, dispatch_time( DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC ) );
++			dispatch_release( semaphore );
 +
-+		[ stream release ];
-+		m_stream = nullptr;
++			[ stream release ];
++			displayState.stream = nullptr;
++		}
++
++		// The output handler is retained by the stream, so it has to be
++		// released explicitly.
++		if( displayState.streamOutput != nullptr )
++		{
++			[ static_cast<id>( displayState.streamOutput ) release ];
++			displayState.streamOutput = nullptr;
++		}
++
++		if( displayState.contentFilter != nullptr )
++		{
++			[ static_cast<id>( displayState.contentFilter ) release ];
++			displayState.contentFilter = nullptr;
++		}
++
++		if( displayState.streamConfiguration != nullptr )
++		{
++			[ static_cast<id>( displayState.streamConfiguration ) release ];
++			displayState.streamConfiguration = nullptr;
++		}
 +	}
 +
-+	// The output handler is retained by the stream, so it has to be released
-+	// explicitly.
-+	if( m_streamOutput != nullptr )
-+	{
-+		[ static_cast<id>( m_streamOutput ) release ];
-+		m_streamOutput = nullptr;
-+	}
-+
-+	if( m_contentFilter != nullptr )
-+	{
-+		[ static_cast<id>( m_contentFilter ) release ];
-+		m_contentFilter = nullptr;
-+	}
-+
-+	if( m_streamConfiguration != nullptr )
-+	{
-+		[ static_cast<id>( m_streamConfiguration ) release ];
-+		m_streamConfiguration = nullptr;
-+	}
++	m_displays.clear();
++	m_displayFrames.clear();
 +
 +	if( m_callbackQueue != nullptr )
 +	{
@@ -670,7 +758,65 @@ index 000000000..0d6f123d2
 +
 +bool ScreenCaptureKitCapturer::isRunning() const
 +{
-+	return m_stream != nullptr;
++	return m_displays.isEmpty() == false;
++}
++
++
++
++void ScreenCaptureKitCapturer::composeFrame()
++{
++	std::lock_guard<std::mutex> lock( m_frameMutex );
++
++	if( m_displays.count() <= 1 )
++	{
++		// A single display needs no composition.
++		return;
++	}
++
++	// The virtual desktop is filled with black, so that the areas that are
++	// not covered by a display stay empty.
++	if( m_frame.size() != m_framebufferSize || m_frame.isNull() )
++	{
++		m_frame = QImage( m_framebufferSize, QImage::Format_RGB32 );
++		m_frame.fill( Qt::black );
++	}
++
++	for( int i = 0; i < m_displays.count() && i < m_displayFrames.count(); ++i )
++	{
++		const auto& displayFrame = m_displayFrames[ i ];
++		if( displayFrame.isNull() )
++		{
++			// No frame has been received for this display yet.
++			continue;
++		}
++
++		const auto& displayState = m_displays[ i ];
++		const auto target = displayState.position;
++
++		// The frame of the display is scaled to the size it occupies in the
++		// virtual desktop and painted at its position.
++		const auto scaled = displayFrame.scaled( displayState.size, Qt::IgnoreAspectRatio, Qt::FastTransformation );
++
++		for( int line = 0; line < scaled.height(); ++line )
++		{
++			const auto targetLine = target.y() + line;
++			if( targetLine < 0 || targetLine >= m_frame.height() )
++			{
++				continue;
++			}
++
++			const auto sourceLine = scaled.constScanLine( line );
++			auto* targetData = m_frame.scanLine( targetLine ) + target.x() * 4;
++
++			const auto copyWidth = qMin( scaled.width(), m_frame.width() - target.x() );
++			if( copyWidth <= 0 )
++			{
++				continue;
++			}
++
++			std::memcpy( targetData, sourceLine, static_cast<size_t>( copyWidth ) * 4 );
++		}
++	}
 +}
 +
 +
@@ -678,7 +824,23 @@ index 000000000..0d6f123d2
 +QImage ScreenCaptureKitCapturer::currentFrame() const
 +{
 +	std::lock_guard<std::mutex> lock( m_frameMutex );
-+	return m_frame;
++
++	if( m_displays.count() == 1 )
++	{
++		// A single display is used as it is, without any composition.
++		const auto& displayFrames = m_displayFrames;
++		if( displayFrames.isEmpty() == false && displayFrames[ 0 ].isNull() == false )
++		{
++			return displayFrames[ 0 ];
++		}
++	}
++
++	if( m_frame.isNull() == false )
++	{
++		return m_frame;
++	}
++
++	return {};
 +}
 +
 +
@@ -846,10 +1008,10 @@ index 000000000..98f54183f
 +DECLARE_CONFIG_PROXY( ScreenCaptureKitConfiguration, FOREACH_SCREENCAPTUREKIT_VNC_CONFIG_PROPERTY )
 diff --git a/plugins/vncserver/screencapturekit/ScreenCaptureKitVncServer.cpp b/plugins/vncserver/screencapturekit/ScreenCaptureKitVncServer.cpp
 new file mode 100644
-index 000000000..14c15c2a6
+index 000000000..ad15a1a25
 --- /dev/null
 +++ b/plugins/vncserver/screencapturekit/ScreenCaptureKitVncServer.cpp
-@@ -0,0 +1,283 @@
+@@ -0,0 +1,287 @@
 +/*
 + * ScreenCaptureKitVncServer.cpp - implementation of ScreenCaptureKitVncServer class
 + *
@@ -1072,6 +1234,10 @@ index 000000000..14c15c2a6
 +
 +	// The flag is reset, so that the same frame is not copied again.
 +	m_capturer->resetNewFrame();
++
++	// The frames of the individual displays are combined into the virtual
++	// desktop before the frame is read.
++	m_capturer->composeFrame();
 +
 +	const auto frame = m_capturer->currentFrame();
 +	if( frame.isNull() )
@@ -1383,7 +1549,7 @@ index 000000000..411fe6644
 +};
 diff --git a/plugins/vncserver/screencapturekit/ScreenCaptureKitVncServerConfigurationWidget.ui b/plugins/vncserver/screencapturekit/ScreenCaptureKitVncServerConfigurationWidget.ui
 new file mode 100644
-index 000000000..2a2f2cbe2
+index 000000000..3b95f862b
 --- /dev/null
 +++ b/plugins/vncserver/screencapturekit/ScreenCaptureKitVncServerConfigurationWidget.ui
 @@ -0,0 +1,122 @@
@@ -1437,7 +1603,7 @@ index 000000000..2a2f2cbe2
 +   <item row="1" column="1">
 +    <widget class="QCheckBox" name="captureAllDisplays">
 +     <property name="text">
-+      <string>Combine all monitors into a single image</string>
++      <string>Combine all monitors into a single desktop</string>
 +     </property>
 +     <property name="checked">
 +      <bool>true</bool>
