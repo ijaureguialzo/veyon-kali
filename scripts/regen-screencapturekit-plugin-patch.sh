@@ -108,10 +108,12 @@ def modified_file_diff(upstream_dir, path):
 def new_file_diff_from_content(path, content):
     """Genera el diff de un fichero nuevo a partir de su contenido.
 
-    El diff se genera contra un directorio temporal que reproduce la
-    ruta final del fichero, de modo que las cabeceras del parche
-    contengan la ruta relativa correcta y no una ruta absoluta del
-    directorio temporal, que no seria portable.
+    El diff se genera dentro de un directorio temporal en el que se
+    reproduce la ruta final del fichero, y se invoca git con esa ruta
+    RELATIVA.  Git escribe en la cabecera del diff la ruta tal y como se
+    le pasa, de modo que usar una ruta relativa es lo que garantiza que
+    en el parche aparezca la ruta del fichero y no la del directorio
+    temporal, que no seria portable.
     """
     import shutil
     import tempfile
@@ -124,14 +126,14 @@ def new_file_diff_from_content(path, content):
             f.write(content)
 
         proc = subprocess.run(
-            ["git", "diff", "--no-index", "--binary", "/dev/null", target],
-            capture_output=True, text=True)
+            ["git", "diff", "--no-index", "--binary", "/dev/null", path],
+            capture_output=True, text=True, cwd=tmp_dir)
         out = proc.stdout
         out = out.replace(
-            f"diff --git b/{target} b/{target}",
+            f"diff --git b/{path} b/{path}",
             f"diff --git a/{path} b/{path}")
-        out = out.replace(f"+++ b/{target}", f"+++ b/{path}")
-        out = out.replace(f"--- a/{target}", "--- /dev/null")
+        out = out.replace(f"+++ b/{path}", f"+++ b/{path}")
+        out = out.replace(f"--- a/{path}", "--- /dev/null")
         return out
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -174,25 +176,34 @@ smoke_parts = [new_file_diff(f"{plugin_dir}/{name}") for name in smoke_files]
 # El CMakeLists.txt del plugin se genera sin el bloque del smoke test en
 # 0018.  Aqui se produce el diff que lo anade, contra la version de 0018.
 plugin_cmake = f"{plugin_dir}/CMakeLists.txt"
-without_smoke = os.path.join(upstream_dir, "plugins", "vncserver",
-                             "screencapturekit", "CMakeLists.txt")
-with_smoke = os.path.join(os.getcwd(), plugin_cmake)
 
 # La version sin smoke test se reconstruye quitando el bloque final del
 # fichero actual.
-current = open(with_smoke).read()
+current = open(plugin_cmake).read()
 marker = "\n# Standalone test of the capturer."
 if marker in current:
     without_content = current[:current.index(marker)]
 else:
     without_content = current
 
-os.makedirs(os.path.dirname(without_smoke), exist_ok=True)
-with open(without_smoke, "w") as f:
-    f.write(without_content)
+# El diff de la modificacion se calcula contra un arbol temporal que
+# reproduce la version de 0018.  Escribir esa version dentro del checkout
+# upstream dejaria un directorio sin rastrear en el, que el build
+# canonico no limpia y que ensucia el arbol de trabajo.
+import shutil
+import tempfile
 
-smoke_parts.append(modified_file_diff(
-    upstream_dir, plugin_cmake))
+tmp_upstream = tempfile.mkdtemp(prefix="veyon-sck-upstream-")
+try:
+    without_smoke = os.path.join(tmp_upstream, plugin_cmake)
+    os.makedirs(os.path.dirname(without_smoke), exist_ok=True)
+    with open(without_smoke, "w") as f:
+        f.write(without_content)
+
+    smoke_parts.append(modified_file_diff(
+        tmp_upstream, plugin_cmake))
+finally:
+    shutil.rmtree(tmp_upstream, ignore_errors=True)
 
 with open(smoke_patch_file, "w") as f:
     f.write("".join(smoke_parts))

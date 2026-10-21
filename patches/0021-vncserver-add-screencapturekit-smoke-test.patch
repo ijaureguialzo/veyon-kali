@@ -113,14 +113,16 @@ index 000000000..40bae4fa7
 +	return app.exec();
 +}
 diff --git a/plugins/vncserver/screencapturekit/CMakeLists.txt b/plugins/vncserver/screencapturekit/CMakeLists.txt
-index 0964b9fb3..290549b85 100644
+index 29235d796..613787d81 100644
 --- a/plugins/vncserver/screencapturekit/CMakeLists.txt
 +++ b/plugins/vncserver/screencapturekit/CMakeLists.txt
-@@ -39,3 +39,45 @@ else()
+@@ -38,4 +38,45 @@ else()
+ 	target_link_libraries(screencapturekit-vnc-server PRIVATE LibVNC::LibVNCServer)
  endif()
  
- target_compile_options(screencapturekit-vnc-server PRIVATE -Wno-parentheses)
-+
+-target_compile_options(screencapturekit-vnc-server PRIVATE -Wno-parentheses)
+\ No newline at end of file
++target_compile_options(screencapturekit-vnc-server PRIVATE -Wno-parentheses)
 +# Standalone test of the capturer.  It is not part of the plugin and is not
 +# installed.  It allows the capture to be verified without running the whole
 +# VNC server, which is useful on systems where the displays are asleep.

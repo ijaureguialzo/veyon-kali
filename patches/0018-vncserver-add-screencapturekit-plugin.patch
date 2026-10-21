@@ -1710,11 +1710,11 @@ index 2676f13ca..3ac7fe17f 100644
  	}
  
  	virtual QStringList supportedSessionTypes() const override
-diff --git a/var/folders/h9/jxb3fz6n0l58hvjmxnhqkxvw0000gn/T/veyon-sck-patch-qkw0lo73/plugins/vncserver/screencapturekit/CMakeLists.txt b/var/folders/h9/jxb3fz6n0l58hvjmxnhqkxvw0000gn/T/veyon-sck-patch-qkw0lo73/plugins/vncserver/screencapturekit/CMakeLists.txt
+diff --git a/plugins/vncserver/screencapturekit/CMakeLists.txt b/plugins/vncserver/screencapturekit/CMakeLists.txt
 new file mode 100644
-index 000000000..0964b9fb3
+index 0000000..29235d7
 --- /dev/null
-+++ b/var/folders/h9/jxb3fz6n0l58hvjmxnhqkxvw0000gn/T/veyon-sck-patch-qkw0lo73/plugins/vncserver/screencapturekit/CMakeLists.txt
++++ b/plugins/vncserver/screencapturekit/CMakeLists.txt
 @@ -0,0 +1,41 @@
 +include(BuildVeyonPlugin)
 +
@@ -1757,3 +1757,4 @@ index 000000000..0964b9fb3
 +endif()
 +
 +target_compile_options(screencapturekit-vnc-server PRIVATE -Wno-parentheses)
+\ No newline at end of file
