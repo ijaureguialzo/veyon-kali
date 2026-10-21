@@ -513,3 +513,69 @@ veyon-cli plugin list: 0
 
 Comprobado tambien en una copia del bundle fuera del workspace, para
 descartar que la ruta de compilacion sea la causa.
+
+## Integracion del backend nativo en el servidor VNC
+
+### Situacion actual
+
+Resuelto. El backend ScreenCaptureKit se selecciona y captura en el bundle
+canonico, pero aparecieron dos fallos reales durante la integracion.
+
+### Fallo 1 — el backend nativo no era el plugin por defecto
+
+`HeadlessVncServer` y `ScreenCaptureKitVncServer` se declaraban ambos como
+`ProvidesDefaultImplementation`, asi que el orden de carga de plugins
+decidia cual se usaba, y el headless se llevaba el puesto casi siempre.
+
+Se ha anadido `Plugin::PreferredDefaultImplementation` a la seleccion del
+constructor de `VncServer`, que separa los candidatos preferidos de los
+portatiles y elige el preferido en primer lugar. El plugin nativo se
+declara con:
+
+```cpp
+return Plugin::Flags( Plugin::ProvidesDefaultImplementation ) |
+       Plugin::Flags( Plugin::PreferredDefaultImplementation );
+```
+
+### Fallo 2 — los frames no llegaban al hilo del servidor VNC
+
+El flag `m_newFrame` nunca se ponia a `true`, y el primer intento de
+marcarlo desde un slot encolado no funcionaba porque el hilo del servidor
+VNC no ejecuta eventos de Qt.
+
+Ahora el flag se marca en el callback de ScreenCaptureKit, bajo el mismo
+mutex que protege el frame. La senal `frameCaptured()` se conserva como
+aviso secundario para el smoke test.
+
+### Permiso de Screen Recording bajo launchd
+
+El backend nativo falla con un LaunchAgent porque TCC concede el permiso
+de captura de pantalla por bundle identifier y un proceso lanzado por
+`launchd` no hereda el contexto de la terminal del usuario:
+
+```text
+The "Screen Recording" privacy permission has not been granted.
+```
+
+En ese caso el servidor recurre al backend headless mediante el mecanismo
+de fallback, de modo que sigue operando. Para la captura nativa hay que
+conceder el permiso en Ajustes del Sistema > Privacidad y seguridad >
+Grabacion de pantalla, anadiendo `io.veyon.veyon` o `/Applications/Veyon.app`.
+
+### Validacion
+
+Stack del proceso en vivo con el bundle canonico:
+
+```text
++ ScreenCaptureKitVncServer::runServer(int, QCA::SecureArray const&)
++   ScreenCaptureKitVncServer::updateFramebuffer(ScreenCaptureKitVncScreen*)
++     ScreenCaptureKitCapturer::composeFrame()
++       -[ScreenCaptureKitStreamOutput stream:didOutputSampleBuffer:ofType:]
+```
+
+Volcado del framebuffer del servidor VNC:
+
+```text
+píxeles no negros: 1112584 de 1159680 => 95.9%
+dimensiones: 1920 x 604
+```

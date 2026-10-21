@@ -1137,3 +1137,138 @@ veyon-cli plugin list: 0
   intervenia.
 - La ruta con symlink `/tmp`: las copias comparadas no eran byte
   identicas, asi que no aislaba nada.
+
+### 8.13 Dos fallos reales en la integracion del backend ScreenCaptureKit
+
+Al integrar el backend nativo en el servidor VNC aparecieron dos fallos
+que no se detectaban con el smoke test aislado, porque este solo ejercita
+el capturador y no la seleccion del plugin ni el bucle del servidor.
+
+#### Fallo 1 — el backend nativo no era el plugin por defecto
+
+El servidor VNC elige el plugin de captura en el constructor de
+`VncServer`, recorriendo `VeyonCore::pluginManager().pluginObjects()`.
+Tanto `HeadlessVncServer` como `ScreenCaptureKitVncServer` se declaraban
+como `ProvidesDefaultImplementation`, de modo que el primero que apareciese
+en la lista se llevaba el puesto. El orden de carga de plugins no esta
+garantizado, asi que el resultado era el headless la mayor parte de las
+veces.
+
+La correccion introduce `Plugin::PreferredDefaultImplementation`, que ya
+existia en `Plugin.h`, y el constructor de `VncServer` separa los
+candidatos en dos listas:
+
+```cpp
+if( pluginInterface->flags().testFlag( Plugin::ProvidesDefaultImplementation ) )
+{
+    if( pluginInterface->flags().testFlag( Plugin::PreferredDefaultImplementation ) )
+    {
+        preferredVncServerPlugins.append( vncServerPluginInterface );
+    }
+    else
+    {
+        defaultVncServerPlugins.append( vncServerPluginInterface );
+    }
+}
+```
+
+El plugin nativo se declara asi:
+
+```cpp
+return Plugin::Flags( Plugin::ProvidesDefaultImplementation ) |
+       Plugin::Flags( Plugin::PreferredDefaultImplementation );
+```
+
+Las conversiones explicitas a `Plugin::Flags` son necesarias porque la
+enumeracion underlying es `int` y la conversion implicita no compila.
+
+Comprobado en runtime con instrumentacion temporal en el constructor:
+
+```text
+XXXDEBUG plugin ExternalVncServer          flags=0 provides=0 preferred=0
+XXXDEBUG plugin HeadlessVncServer          flags=1 provides=1 preferred=0
+XXXDEBUG plugin ScreenCaptureKitVncServer  flags=5 provides=1 preferred=1
+```
+
+#### Fallo 2 — los frames no llegaban al hilo del servidor VNC
+
+El capturador mantiene un flag `m_newFrame` que el hilo del servidor VNC
+consulta en `hasNewFrame()`. Ese flag solo se reseteaba a `false` y nunca
+se ponia a `true`, con lo que el framebuffer nunca se actualizaba.
+
+El primer intento fue marcarlo desde un slot encolado mediante
+`QMetaObject::invokeMethod()`, pero el hilo del servidor VNC no ejecuta
+eventos de Qt: su bucle solo hace `msleep()`, `updateFramebuffer()` y
+`rfbProcessEvents()`. Una invocacion encolada nunca llega a ejecutarse.
+
+La correccion marca el flag en el propio productor, es decir, en el
+callback de ScreenCaptureKit, bajo el mismo mutex que protege el frame:
+
+```cpp
+{
+    std::lock_guard<std::mutex> lock( *m_frameMutex );
+    m_displayFrames[ m_displayIndex ] = copy;
+
+    if( m_newFrame != nullptr )
+    {
+        *m_newFrame = true;
+    }
+}
+```
+
+La senal `frameCaptured()` se mantiene como aviso secundario para el smoke
+test, que si tiene event loop, pero el estado sincronizado ya no depende de
+ella.
+
+#### Validacion end-to-end
+
+Con el bundle canonico, el stack del proceso en vivo muestra la cadena
+completa de captura:
+
+```text
++ ScreenCaptureKitVncServer::runServer(int, QCA::SecureArray const&)
++   ScreenCaptureKitVncServer::updateFramebuffer(ScreenCaptureKitVncScreen*)
++     ScreenCaptureKitCapturer::composeFrame()
++       -[ScreenCaptureKitStreamOutput stream:didOutputSampleBuffer:ofType:]
+```
+
+Y el volcado del framebuffer del servidor VNC contiene imagen real:
+
+```text
+píxeles no negros: 1112584 de 1159680 => 95.9%
+colores únicos (muestreados): 801
+dimensiones: 1920 x 604
+```
+
+#### El permiso de Screen Recording y el contexto de launchd
+
+Al arrancar el servidor desde un LaunchAgent, el backend nativo falla con:
+
+```text
+ScreenCaptureKitCapturer: could not start the screen capture:
+"The \"Screen Recording\" privacy permission has not been granted."
+```
+
+No es un fallo del plugin, sino del mecanismo de permisos TCC de macOS.
+TCC concede el permiso de captura de pantalla por bundle identifier, y un
+proceso lanzado por `launchd` no hereda el contexto de seguridad de la
+terminal del usuario. El mismo binario, arrancado desde una terminal,
+captura sin problema; arrancado por `launchd`, recibe la denegacion.
+
+Comprobado con el mismo ejecutable en los dos contextos:
+
+| Contexto | Backend elegido |
+|---|---|
+| Terminal del usuario | `ScreenCaptureKitVncServer` |
+| LaunchAgent (`gui/<uid>`) | `HeadlessVncServer` |
+
+En el segundo caso el servidor **sigue funcionando**: el mecanismo de
+fallback anadido en `VncServer` arranca el backend headless cuando el
+preferido no puede arrancar. Ese es justamente el motivo de existir del
+fallback, y no un efecto secundario.
+
+Para que la captura nativa funcione bajo `launchd` hay que conceder el
+permiso de forma explicita en Ajustes del Sistema > Privacidad y seguridad >
+Grabacion de pantalla, anadiendo `io.veyon.veyon` o `/Applications/Veyon.app`.
+El instalador `scripts/install-veyon-service-macos.sh` informa de ello al
+terminar.
