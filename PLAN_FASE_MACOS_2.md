@@ -18,6 +18,24 @@ y commitear por separado.
 Los detalles de la línea 1 se encuentran en `ANALISIS_Y_PLAN_MACOS.md`,
 sección 8.8.
 
+## Trabajo adicional de la fase 2
+
+Además de las cuatro líneas anteriores, esta fase incluye un conjunto
+de tareas de profundizacion del plugin de plataforma macOS y del
+empaquetado:
+
+| Tarea | Descripción | Estado |
+|---|---|---|
+| 1 | Reescritura del arranque del servicio | **Descartada** (ya funciona con launchd) |
+| 2 | `SERVICE_PATH` del instalador | **Hecho** (`d9d84579`) |
+| 3 | Token del `ServiceDataManager` al LaunchAgent | **Hecho** (`93c5136c`) |
+| 4 | Home real del usuario (`getpwnam`) | **Hecho** (`93c5136c`) |
+| 8 | Captura multimonitor con ScreenCaptureKit (opción A) | **Hecho** |
+| 9 | Limpieza de la API del servicio launchd | **Hecho** |
+| 10 | Empaquetado DMG con `diskutil` | **Hecho** |
+| 11 | Funciones nativas: ping, firewall, velocidad, preferencias, sesión | **Hecho** |
+| 12 | Versionar y actualizar este plan | **Hecho** (`ea4e9e29`) |
+
 ## Línea 1 — Captura nativa con ScreenCaptureKit
 
 ### Situación actual
@@ -293,3 +311,154 @@ El rol nuevo debe:
    poder instalar y arrancar el servicio de verdad. *Descartada.*
 
 Cada línea termina en un commit Conventional Commits.
+
+## Tarea 8 — Captura multimonitor con ScreenCaptureKit (opción A)
+
+### Decisión
+
+Se adopta la **opción A**: un `SCStream` independiente por cada
+`SCDisplay`, con un frame por monitor, y una composición final en un
+escritorio virtual.
+
+La opción B (un unico `SCStream` con `desktopIndependentWindow`) se
+descarta: `initWithDesktopIndependentWindow:nil` exige una ventana real y
+no resuelve la composicion multimonitor.
+
+### Implementacion
+
+- `ScreenCaptureKitCapturer` mantiene un `QVector<DisplayState>`, con el
+  `SCStream`, `SCContentFilter`, `SCStreamConfiguration` y el output de
+  cada display, junto a su posicion y su tamano.
+- `ScreenCaptureKitStreamOutput` escribe en `m_displayFrames[m_displayIndex]`,
+  de modo que cada display tiene su propio framebuffer.
+- La geometria se calcula a partir de `SCDisplay.frame`, de forma que el
+  *bounding box* conserva la disposicion relativa de los monitores,
+  incluidos los offsets negativos.
+- Se aplica un **unico factor de escala** comun, para que ningun display
+  cambie de proporcion ni use una escala distinta.
+- Las zonas del *bounding box* no cubiertas por ningun monitor quedan en
+  negro.
+- Con un unico monitor se devuelve directamente su frame capturado, sin
+  composicion adicional.
+
+### Pendiente
+
+Recepcion real de frames, activacion de `m_newFrame` y verificacion de
+la composicion en un equipo con la pantalla encendida.
+
+## Tarea 9 — Limpieza de la API del servicio launchd
+
+Se ha eliminado el codigo muerto y se ha centralizado el acceso a
+launchd:
+
+- `MacOSServiceCore::checkServerState()`, que estaba declarado y definido
+  pero nunca se llamaba.
+- El `PlatformSessionManager`, su include y el miembro `m_sessionManager`.
+- Las constantes `ServerRestartInterval` y `ServerTerminateTimeout`.
+- El `Q_UNUSED(name)` redundante de `runAsService()`.
+
+Se han anadido cuatro funciones de ayuda en `MacOSServiceFunctions`:
+
+| Funcion | Proposito |
+|---|---|
+| `serviceLabel()` | Nombre del job de launchd (`io.veyon.veyon-service`). |
+| `serviceDomain()` | `system/` para root, `gui/<uid>/` para usuario. |
+| `servicePlistPath()` | `/Library/LaunchDaemons` o `~/Library/LaunchAgents`. |
+| `runLaunchctl()` | Envio de comandos a `launchctl` con manejo de errores. |
+
+`launchctlPrint()`, `start()` y `stop()` consultan primero el dominio de
+sistema y despues el del usuario. `install()` crea el directorio del
+LaunchAgent si no existe, valida el plist con `plutil -lint` y lo elimina
+si no es valido, y usa `bootout` + `bootstrap`. `uninstall()` considera
+correcto tanto que el plist desaparezca como que el job se descargue.
+
+## Tarea 10 — Empaquetado DMG con `diskutil`
+
+El empaquetado se ha migrado a un flujo basado en `diskutil`, manteniendo
+`hdiutil` unicamente en las dos operaciones para las que no existe
+alternativa: crear la imagen y comprimirla.
+
+| Operacion | Herramienta | Motivo |
+|---|---|---|
+| Crear la imagen | `hdiutil create -type UDIF` | `diskutil` no tiene equivalente. |
+| Adjuntar y montar | `diskutil image attach` | `diskutil` no tiene verbo `attach`. |
+| Formatear | — | `hdiutil create -fs HFS+J` ya genera la particion y el volumen. |
+| Copiar el contenido | `ditto` | Copia fiel de metadatos y recursos. |
+| Desmontar | `diskutil unmount` | |
+| Expulsar | `diskutil eject` | |
+| Comprimir | `hdiutil convert -format UDZO` | `diskutil` no puede convertir imagenes. |
+
+Detalles importantes:
+
+- El tamano de la imagen se calcula **despues** de crear el staging, a
+  partir de su tamano real: `STAGING_BYTES / 1024 * 2 + 400` MB.
+- No se ejecuta `diskutil eraseVolume` sobre la imagen creada por
+  `hdiutil`, porque ya viene formateada. Intentarlo falla con:
+  ```text
+  Error with erase: The chosen size is not valid for the chosen file system (-69850)
+  ```
+- Se anade un `trap cleanup EXIT` que desmonta, expulsa y borra los
+  temporales, para que una interruption no deje imagenes adjuntas.
+
+## Tarea 11 — Funciones nativas de macOS
+
+Se han implementado las funciones que estaban como stubs:
+
+| Funcion | Mecanismo |
+|---|---|
+| Ping ICMP | Socket datagrama `SOCK_DGRAM` con `IPPROTO_ICMP`, checksum propio, `poll()` con timeout de 1 s. |
+| Resolucion de nombres | `QHostInfo`. |
+| Firewall por aplicacion | `socketfilterfw --add` / `--remove`, sin tocar el estado global del firewall. |
+| Velocidad de red | IOKit (propiedad `speed`), con `SIOCGIFMEDIA` y `SCDynamicStore` como alternativas. |
+| Preferencias | `CFPreferencesCopyAppValue` con `kCFPreferencesCurrentUser`, convertidas a `QVariant`. |
+| Logon / logoff | `System Events` para Fast User Switching y Cmd+Shift+Q. |
+
+Notas:
+
+- El ping usa un socket **datagrama** sin privilegios, en lugar de un
+  socket raw, que requiere root.
+- La velocidad de red se busca en el registro del IOKit, leyendo la
+  propiedad `speed` de la propia entrada de la interfaz. Se buscan las
+  clases `IOEthernetInterface` y `IOSkywalkLegacyEthernetInterface`,
+  porque el stack Skywalk de Apple Silicon usa su propia clase.
+- Las preferencias se mapean asi:
+  ```text
+  Veyon/Framework/Configuration/Domain -> VeyonDomain
+  Veyon/Framework/Network/Server       -> VeyonServer
+  ```
+- `prepareLogon()` no necesita fase previa: devuelve exito directamente.
+- `performLogon()` valida las credenciales y `logoff()` envia Cmd+Shift+Q
+  mediante `System Events`. El mecanismo requiere el permiso de
+  accesibilidad y debe validarse en una sesion Aqua real.
+
+### Pendiente
+
+Confirmar el atajo exacto de Fast User Switching y el exit code de
+`osascript`, porque `runCommand()` decide el exito por la salida no vacia y
+`osascript` normalmente no produce salida al enviar un atajo.
+
+## Tarea 12 — Documentacion
+
+`PLAN_FASE_MACOS_2.md` pasa a formar parte del historial del repositorio y
+se actualiza con el estado real de cada linea y de cada tarea.
+
+## Bundle autosuficiente
+
+Ademas de las tareas anteriores, el despliegue del bundle se ha
+completado con la eliminacion de los **runpaths absolutos** que hereda
+del directorio de compilacion. Antes de esta correccion, los ejecutables
+y los plugins arrastraban un runpath hacia
+`/Users/<usuario>/.../INSTALL/lib/veyon`, que rompia la relocalizacion.
+
+La limpieza se hace al final del despliegue, cuando todas las librerias ya
+estan copiadas, porque algunas de ellas reciben su runpath en el momento de
+ser copiadas.
+
+Resultado de la validacion actual:
+
+```text
+rutas absolutas en el bundle:  0
+dependencias externas (otool -L): 0
+rutas externas (DYLD_PRINT_LIBRARIES): 0
+codesign --verify --deep: OK
+```
