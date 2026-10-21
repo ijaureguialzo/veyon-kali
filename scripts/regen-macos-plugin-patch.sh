@@ -23,6 +23,12 @@ WORK_DIR="${VEYON_MACOS_WORK_DIR:-$PROJECT_DIR/build/veyon-macos}"
 PATCH_FILE="$PROJECT_DIR/patches/0011-platform-add-macos-platform-plugin.patch"
 MACOS_DIR="plugins/platform/macos"
 
+# Los ficheros que viven en otro parche no deben entrar aquí, porque git
+# aplicaría los dos y el segundo fallaría sobre un fichero ya creado.
+# Por defecto se excluyen los cinco ficheros del parche 0020 (funciones
+# nativas).  Se puede cambiar con EXCLUDE_FILES al invocar el script.
+EXCLUDE_FILES="${EXCLUDE_FILES:-CMakeLists.txt,MacOSNetworkFunctions.cpp,MacOSNetworkFunctions.h,MacOSSessionFunctions.cpp,MacOSUserFunctions.cpp}"
+
 if [ ! -d "$WORK_DIR/$MACOS_DIR" ]; then
     echo "ERROR: no se encuentra el workspace del plugin macOS en $WORK_DIR" >&2
     echo "       ejecuta primero: $SCRIPT_DIR/build-veyon-macos.sh --no-build" >&2
@@ -34,7 +40,7 @@ cd "$WORK_DIR"
 # El parche es un "new file" por cada fichero del plugin, así que se genera
 # con "git diff --no-index" contra /dev/null.  Es lo que produce un parche
 # aplicable sobre el checkout upstream.
-python3 - "$MACOS_DIR" "$PATCH_FILE" <<'PY'
+python3 - "$MACOS_DIR" "$PATCH_FILE" "${EXCLUDE_FILES:-}" <<'PY'
 import os
 import subprocess
 import sys
@@ -42,9 +48,13 @@ import sys
 macos_dir = sys.argv[1]
 patch_file = sys.argv[2]
 
+# Los ficheros que viven en otro parche no deben entrar aquí, porque git
+# aplicaría los dos y el segundo fallaría sobre un fichero ya creado.
+exclude = set(sys.argv[3].split(",")) if len(sys.argv) > 3 and sys.argv[3] else set()
+
 files = sorted(
     f for f in os.listdir(macos_dir)
-    if f.endswith((".cpp", ".h", ".txt"))
+    if f.endswith((".cpp", ".h", ".txt")) and f not in exclude
 )
 
 parts = []
@@ -68,4 +78,6 @@ with open(patch_file, "w") as f:
 print(f"parche regenerado: {patch_file} ({len(files)} ficheros)")
 for name in files:
     print(f"    {name}")
+if exclude:
+    print(f"excluidos (viven en otro parche): {', '.join(sorted(exclude))}")
 PY
