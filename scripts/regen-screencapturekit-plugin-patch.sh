@@ -84,7 +84,10 @@ for path in modified_files:
         ["git", "diff", "--no-index", upstream, path],
         capture_output=True, text=True)
     out = proc.stdout
-    out = out.replace(f"diff --git a{upstream} b{upstream}",
+    # "git diff --no-index" escribe la ruta absoluta del fichero upstream
+    # en la cabecera del diff, de modo que el parche no seria portable.  Se
+    # reescribe a rutas relativas al checkout upstream.
+    out = out.replace(f"diff --git a{upstream} b/{path}",
                       f"diff --git a/{path} b/{path}")
     out = out.replace(f"--- a{upstream}", f"--- a/{path}")
     out = out.replace(f"+++ b{upstream}", f"+++ b/{path}")
