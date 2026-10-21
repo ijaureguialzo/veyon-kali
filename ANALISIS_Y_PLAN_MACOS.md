@@ -1039,3 +1039,101 @@ dependencias externas (otool -L): 0
 rutas externas (DYLD_PRINT_LIBRARIES): 0
 codesign --verify --deep: OK
 ```
+
+### 8.12 El aviso «Broken filename passed to function»
+
+Este aviso de Qt aparecia en todos los ejecutables del bundle:
+
+```text
+[WARN] Broken filename passed to function
+```
+
+#### Traza
+
+La instrumentacion temporal de `Logger::qtMsgHandler()` dio la pila exacta:
+
+```text
+qCheckFileNameFail
+qCheckFileName<QFileSystemEntry>
+QFileSystemEngine::canonicalName
+QDir::canonicalPath
+QCA::pluginPaths
+QCA::ProviderManager::scan
+QCA::Global::scan
+QCA::supportedFeatures
+CryptoCore::CryptoCore
+VeyonCore::VeyonCore
+main
+```
+
+`QCA::pluginPaths()` junta tres fuentes: la variable de entorno
+`QCA_PLUGIN_PATH`, `QCoreApplication::libraryPaths()` y la ruta de
+instalacion de plugins compilada en la libreria. `ProviderManager::scan()`
+las canonicaliza con `QDir::canonicalPath()`.
+
+#### Causa raiz
+
+En Qt 6.12, `qCheckFileName()` sobre un `QFileSystemEntry` delega en
+`entry.nativeFilePath()` y rechaza cualquier nombre que contenga un byte
+nulo:
+
+```cpp
+// qfilesystemengine_p.h
+if (Q_UNLIKELY(entry.contains(null)))
+    return qCheckFileNameFail("Broken filename passed to function", ...);
+```
+
+La neutralizacion de la ruta de plugins de QCA en
+`scripts/deploy-veyon-macos.sh` sustituia la ruta compilada
+`/opt/homebrew/Cellar/qca/2.3.12_1/lib/qt/plugins` (48 caracteres) por
+`/nonexistent-veyon-qca-plugins` (30 caracteres) y **rellenaba los 18
+caracteres sobrantes con bytes nulos**.
+
+Esa ruta es un literal **UTF-16LE con longitud explicita**, asi que Qt
+lee los bytes nulos intercalados como caracteres de la cadena, en lugar de
+truncarla en el primer terminador. El resultado era una ruta con bytes
+nulos embebidos, que Qt rechaza.
+
+Comprobado con un programa minimo que enlaza contra el framework QCA del
+bundle:
+
+```text
+[ "/nonexistent-veyon-qca-plugins                     " ]
+```
+
+Es decir, la ruta neutralizada contenia los nulos de relleno.
+
+#### Correccion
+
+El relleno debe hacerse con un caracter que no sea el terminador. Se
+rellena con **espacios**, que mantienen la longitud exacta del literal y
+dejan una ruta limpia:
+
+```python
+padded = replacement + " " * (len(text) - len(replacement))
+```
+
+La ruta sigue siendo inexistente, de modo que QCA la descarta igual, pero
+ya no contiene bytes nulos.
+
+Validacion tras la correccion, en los cinco ejecutables del bundle
+canonico y en una copia relocalizada fuera del workspace:
+
+```text
+veyon-master:       broken=0
+veyon-cli:          broken=0
+veyon-configurator: broken=0
+veyon-service:      broken=0
+veyon-cli plugin list: 0
+```
+
+#### Descartado
+
+- El `strip` de `macdeployqt`: se probo con `-no-strip` y el aviso
+  persistia. La opcion se ha revertido y el DMG vuelve a 32 MB.
+- La duplicacion de QtCore en el bundle: validada con `lsof`, solo hay una
+  copia de cada framework.
+- La firma ad hoc, `Info.plist` o una segunda copia del core: ninguna
+  intervenia.
+- La ruta con symlink `/tmp`: las copias comparadas no eran byte
+  identicas, asi que no aislaba nada.

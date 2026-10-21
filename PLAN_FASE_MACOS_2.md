@@ -462,3 +462,54 @@ dependencias externas (otool -L): 0
 rutas externas (DYLD_PRINT_LIBRARIES): 0
 codesign --verify --deep: OK
 ```
+
+## Aviso «Broken filename passed to function»
+
+### Situacion actual
+
+Resuelto. El aviso de Qt aparecia en los cinco ejecutables del bundle y
+procedia de la neutralizacion de la ruta de plugins de QCA.
+
+### Causa raiz
+
+`QCA::pluginPaths()` canonicaliza con `QDir::canonicalPath()` las rutas
+de plugins, y Qt 6.12 rechaza cualquier nombre de fichero que contenga un
+byte nulo (`qCheckFileName` en `qfilesystemengine_p.h`).
+
+La ruta de plugins compilada en el framework QCA es un literal UTF-16LE
+con longitud explicita:
+
+```text
+/opt/homebrew/Cellar/qca/2.3.12_1/lib/qt/plugins
+```
+
+La neutralizacion la sustituia por una ruta inexistente mas corta y
+rellenaba los caracteres sobrantes **con bytes nulos**. Al ser un literal
+UTF-16LE con longitud fija, Qt leia esos nulos como parte de la cadena en
+lugar de cortarla, y la ruta resultante contenia bytes nulos embebidos.
+
+### Correccion
+
+Rellenar con espacios en lugar de bytes nulos, conservando la longitud del
+literal:
+
+```python
+padded = replacement + " " * (len(text) - len(replacement))
+```
+
+La neutralizacion de la ruta de modulos de OpenSSL no sufre del mismo
+problema: es un literal ASCII en `__cstring`, donde un unico byte nulo
+final es el terminador C habitual.
+
+### Validacion
+
+```text
+veyon-master:       broken=0
+veyon-cli:          broken=0
+veyon-configurator: broken=0
+veyon-service:      broken=0
+veyon-cli plugin list: 0
+```
+
+Comprobado tambien en una copia del bundle fuera del workspace, para
+descartar que la ruta de compilacion sea la causa.
