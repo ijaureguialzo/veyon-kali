@@ -648,6 +648,35 @@ for library in "$FRAMEWORKS_DIR"/*.dylib; do
 done
 
 # ---------------------------------------------------------------------------
+# Runpaths absolutos
+# ---------------------------------------------------------------------------
+
+# Los binarios se compilan con runpaths que apuntan al directorio de
+# instalacion del build, que no existe dentro del bundle.  Se eliminan todas
+# las rutas absolutas, para que el bundle no dependa de la maquina en la que
+# se ha compilado.
+#
+# La limpieza se hace al final del despliegue, cuando todas las librerias ya
+# estan copiadas, porque algunas de ellas reciben su runpath en el momento de
+# ser copiadas.
+echo "── Eliminar los runpaths absolutos ──"
+for binary in "$BUNDLE"/Contents/MacOS/* "$BUNDLE"/Contents/PlugIns/*.so "$BUNDLE"/Contents/PlugIns/*/*.dylib \
+              "$BUNDLE"/Contents/Resources/lib/*.dylib "$BUNDLE"/Contents/Frameworks/*/Versions/*/* \
+              "$FRAMEWORKS_DIR"/*.dylib; do
+    [ -f "$binary" ] || continue
+    [ -L "$binary" ] && continue
+    chmod u+w "$binary" 2>/dev/null || true
+    while read -r rpath; do
+        [ -n "$rpath" ] || continue
+        case "$rpath" in
+            /*)
+                install_name_tool -delete_rpath "$rpath" "$binary" 2>/dev/null || true
+                ;;
+        esac
+    done < <(otool -l "$binary" 2>/dev/null | awk '/^ *path /{print $2}')
+done
+
+# ---------------------------------------------------------------------------
 # Firmado ad hoc
 # ---------------------------------------------------------------------------
 
