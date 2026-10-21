@@ -1,71 +1,3 @@
-diff --git a/plugins/platform/macos/CMakeLists.txt b/plugins/platform/macos/CMakeLists.txt
-new file mode 100644
-index 000000000..693c937ff
---- /dev/null
-+++ b/plugins/platform/macos/CMakeLists.txt
-@@ -0,0 +1,62 @@
-+include(BuildVeyonPlugin)
-+
-+build_veyon_plugin(macos-platform
-+	NAME MacOSPlatform
-+	SOURCES
-+	MacOSPlatformPlugin.cpp
-+	MacOSCoreFunctions.cpp
-+	MacOSFilesystemFunctions.cpp
-+	MacOSInputDeviceFunctions.cpp
-+	MacOSKeyboardShortcutTrapper.cpp
-+	MacOSNetworkFunctions.cpp
-+	MacOSServerProcess.cpp
-+	MacOSServiceCore.cpp
-+	MacOSServiceFunctions.cpp
-+	MacOSSessionFunctions.cpp
-+	MacOSUserFunctions.cpp
-+	MacOSPlatformPlugin.h
-+	MacOSCoreFunctions.h
-+	MacOSFilesystemFunctions.h
-+	MacOSInputDeviceFunctions.h
-+	MacOSKeyboardShortcutTrapper.h
-+	MacOSNetworkFunctions.h
-+	MacOSServerProcess.h
-+	MacOSServiceCore.h
-+	MacOSServiceFunctions.h
-+	MacOSSessionFunctions.h
-+	MacOSUserFunctions.h
-+	../common/PlatformSessionManager.h
-+	../common/PlatformSessionManager.cpp
-+	../common/ServiceDataManager.h
-+	../common/ServiceDataManager.cpp
-+)
-+
-+# The plugin uses a couple of Objective-C++ source files (AppKit, Foundation
-+# and CoreGraphics APIs), so the whole target has to be compiled as
-+# Objective-C++.
-+#
-+# The shared precompiled header is built as plain C++ and therefore cannot be
-+# reused from Objective-C++ translation units, so the precompiled headers and
-+# the unity build have to be disabled for them.
-+set_source_files_properties(
-+	MacOSCoreFunctions.cpp
-+	MacOSKeyboardShortcutTrapper.cpp
-+	PROPERTIES
-+		COMPILE_FLAGS "-x objective-c++"
-+		SKIP_UNITY_BUILD_INCLUSION TRUE
-+		SKIP_PRECOMPILE_HEADERS TRUE
-+)
-+
-+target_link_libraries(macos-platform PRIVATE
-+	Qt${QT_MAJOR_VERSION}::Network
-+	Qt${QT_MAJOR_VERSION}::Widgets
-+	"-framework AppKit"
-+	"-framework Foundation"
-+	"-framework CoreFoundation"
-+	"-framework CoreGraphics"
-+	"-framework IOKit"
-+)
-+
-+# The service core uses the session manager and the service data manager,
-+# which are shared between the platform plugins.
-+target_include_directories(macos-platform PRIVATE ../common)
 diff --git a/plugins/platform/macos/MacOSCoreFunctions.cpp b/plugins/platform/macos/MacOSCoreFunctions.cpp
 new file mode 100644
 index 000000000..d719e485b
@@ -1144,191 +1076,6 @@ index 000000000..511438a12
 +	class Private;
 +	Private* d;
 +};
-diff --git a/plugins/platform/macos/MacOSNetworkFunctions.cpp b/plugins/platform/macos/MacOSNetworkFunctions.cpp
-new file mode 100644
-index 000000000..745387c5e
---- /dev/null
-+++ b/plugins/platform/macos/MacOSNetworkFunctions.cpp
-@@ -0,0 +1,134 @@
-+/*
-+ * MacOSNetworkFunctions.cpp - implementation of MacOSNetworkFunctions class
-+ *
-+ * Copyright (c) 2026 Veyon Community
-+ *
-+ * This file is part of Veyon - https://veyon.io
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public
-+ * License as published by the Free Software Foundation; either
-+ * version 2 of the License, or (at your option) any later version.
-+ *
-+ * This program is distributed in the hope that it will be useful,
-+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-+ * General Public License for more details.
-+ *
-+ * You should have received a copy of the GNU General Public
-+ * License along with this program (see COPYING); if not, write to the
-+ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
-+ * Boston, MA 02111-1307, USA.
-+ *
-+ */
-+
-+#include <netinet/in.h>
-+#include <sys/socket.h>
-+#include <unistd.h>
-+
-+#include <QHostAddress>
-+#include <QNetworkInterface>
-+
-+#include "MacOSNetworkFunctions.h"
-+
-+
-+
-+PlatformNetworkFunctions::PingResult MacOSNetworkFunctions::ping(const QString& hostAddress)
-+{
-+	// Use the ICMP echo request provided by the kernel.  A raw socket requires
-+	// root privileges, so fall back to the "connect" based approach for the
-+	// common case of an ICMP-capable address.
-+	Q_UNUSED( hostAddress )
-+
-+	// The ICMP ping implementation is provided by QAbstractSocket-based
-+	// helper processes on other platforms.  On macOS the simplest reliable
-+	// approach is to let the system resolve and reach the host using a
-+	// datagram socket, which does not require any privileges.
-+	return PingResult::Unknown;
-+}
-+
-+
-+
-+bool MacOSNetworkFunctions::configureFirewallException( const QString& applicationPath, const QString& description, bool enabled )
-+{
-+	// The macOS application firewall does not support per-application
-+	// exceptions through a supported API.  Applications can declare their
-+	// need for incoming connections through the Info.plist key
-+	// NSLocalNetworkUsageDescription and the SystemConfiguration framework.
-+	Q_UNUSED( applicationPath )
-+	Q_UNUSED( description )
-+	Q_UNUSED( enabled )
-+	return false;
-+}
-+
-+
-+
-+bool MacOSNetworkFunctions::configureSocketKeepalive( Socket socket, bool enabled, int idleTime, int interval, int probes )
-+{
-+	if ( socket == 0 )
-+	{
-+		return false;
-+	}
-+
-+	const auto fd = static_cast<int>( socket );
-+
-+	int keepalive = enabled ? 1 : 0;
-+	if ( ::setsockopt( fd, SOL_SOCKET, SO_KEEPALIVE, &keepalive, sizeof( keepalive ) ) != 0 )
-+	{
-+		return false;
-+	}
-+
-+	if ( enabled == false )
-+	{
-+		return true;
-+	}
-+
-+	// The keepalive parameters are only supported on macOS 10.15 and later.
-+	if ( enabled )
-+	{
-+		const int idle = idleTime > 0 ? idleTime : 0;
-+		const int intvl = interval > 0 ? interval : 0;
-+		const int cnt = probes > 0 ? probes : 0;
-+
-+		::setsockopt( fd, IPPROTO_TCP, TCP_KEEPALIVE, &idle, sizeof( idle ) );
-+		::setsockopt( fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof( intvl ) );
-+		::setsockopt( fd, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof( cnt ) );
-+	}
-+
-+	return true;
-+}
-+
-+
-+
-+QNetworkInterface MacOSNetworkFunctions::defaultRouteNetworkInterface()
-+{
-+	const auto interfaces = QNetworkInterface::allInterfaces();
-+	for ( const auto& interface : interfaces )
-+	{
-+		const auto flags = interface.flags();
-+		if ( flags.testFlag( QNetworkInterface::IsUp ) &&
-+			 flags.testFlag( QNetworkInterface::IsRunning ) &&
-+			 flags.testFlag( QNetworkInterface::IsLoopBack ) == false )
-+		{
-+			for ( const auto& address : interface.addressEntries() )
-+			{
-+				if ( address.ip().protocol() == QAbstractSocket::IPv4Protocol )
-+				{
-+					return interface;
-+				}
-+			}
-+		}
-+	}
-+
-+	return QNetworkInterface();
-+}
-+
-+
-+
-+int MacOSNetworkFunctions::networkInterfaceSpeedInMBitPerSecond(const QNetworkInterface& networkInterface)
-+{
-+	// macOS does not expose the interface speed through a portable Qt API.
-+	// Use the network configuration framework instead.
-+	Q_UNUSED( networkInterface )
-+	return 0;
-+}
-diff --git a/plugins/platform/macos/MacOSNetworkFunctions.h b/plugins/platform/macos/MacOSNetworkFunctions.h
-new file mode 100644
-index 000000000..10aa86cba
---- /dev/null
-+++ b/plugins/platform/macos/MacOSNetworkFunctions.h
-@@ -0,0 +1,39 @@
-+/*
-+ * MacOSNetworkFunctions.h - declaration of MacOSNetworkFunctions class
-+ *
-+ * Copyright (c) 2026 Veyon Community
-+ *
-+ * This file is part of Veyon - https://veyon.io
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public
-+ * License as published by the Free Software Foundation; either
-+ * version 2 of the License, or (at your option) any later version.
-+ *
-+ * This program is distributed in the hope that it will be useful,
-+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-+ * General Public License for more details.
-+ *
-+ * You should have received a copy of the GNU General Public
-+ * License along with this program (see COPYING); if not, write to the
-+ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
-+ * Boston, MA 02111-1307, USA.
-+ *
-+ */
-+
-+#pragma once
-+
-+#include "PlatformNetworkFunctions.h"
-+
-+// clazy:excludeall=copyable-polymorphic
-+
-+class MacOSNetworkFunctions : public PlatformNetworkFunctions
-+{
-+public:
-+	PingResult ping(const QString& hostAddress) override;
-+	bool configureFirewallException( const QString& applicationPath, const QString& description, bool enabled ) override;
-+	bool configureSocketKeepalive( Socket socket, bool enabled, int idleTime, int interval, int probes ) override;
-+	QNetworkInterface defaultRouteNetworkInterface() override;
-+	int networkInterfaceSpeedInMBitPerSecond(const QNetworkInterface& networkInterface) override;
-+};
 diff --git a/plugins/platform/macos/MacOSPlatformPlugin.cpp b/plugins/platform/macos/MacOSPlatformPlugin.cpp
 new file mode 100644
 index 000000000..443202ef6
@@ -1717,10 +1464,10 @@ index 000000000..a3224afb9
 +}
 diff --git a/plugins/platform/macos/MacOSServerProcess.h b/plugins/platform/macos/MacOSServerProcess.h
 new file mode 100644
-index 000000000..2b46f10d3
+index 000000000..5cff1f75f
 --- /dev/null
 +++ b/plugins/platform/macos/MacOSServerProcess.h
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,95 @@
 +/*
 + * MacOSServerProcess.h - declaration of MacOSServerProcess class
 + *
@@ -1810,7 +1557,6 @@ index 000000000..2b46f10d3
 +
 +private:
 +	static constexpr auto LaunchctlTimeout = 10000;
-+	static constexpr auto ServerTerminateTimeout = 2000;
 +
 +	const QString m_userName;
 +	const QString m_userHomeDirectory;
@@ -1819,10 +1565,10 @@ index 000000000..2b46f10d3
 +};
 diff --git a/plugins/platform/macos/MacOSServiceCore.cpp b/plugins/platform/macos/MacOSServiceCore.cpp
 new file mode 100644
-index 000000000..28ef1758d
+index 000000000..e2a052740
 --- /dev/null
 +++ b/plugins/platform/macos/MacOSServiceCore.cpp
-@@ -0,0 +1,387 @@
+@@ -0,0 +1,376 @@
 +/*
 + * MacOSServiceCore.cpp - implementation of MacOSServiceCore class
 + *
@@ -2062,17 +1808,6 @@ index 000000000..28ef1758d
 +
 +
 +
-+void MacOSServiceCore::checkServerState( const QString& userName )
-+{
-+	const auto serverProcess = m_serverProcesses.value( userName );
-+	if( serverProcess && serverProcess->isRunning() == false )
-+	{
-+		vWarning() << "server for user" << userName << "stopped unexpectedly";
-+	}
-+}
-+
-+
-+
 +void MacOSServiceCore::stopServer( const QString& userName )
 +{
 +	if( m_serverProcesses.contains( userName ) == false )
@@ -2212,10 +1947,10 @@ index 000000000..28ef1758d
 +}
 diff --git a/plugins/platform/macos/MacOSServiceCore.h b/plugins/platform/macos/MacOSServiceCore.h
 new file mode 100644
-index 000000000..bb3868816
+index 000000000..955a85e47
 --- /dev/null
 +++ b/plugins/platform/macos/MacOSServiceCore.h
-@@ -0,0 +1,113 @@
+@@ -0,0 +1,105 @@
 +/*
 + * MacOSServiceCore.h - declaration of MacOSServiceCore class
 + *
@@ -2246,7 +1981,6 @@ index 000000000..bb3868816
 +#include <QString>
 +#include <QTimer>
 +
-+#include "PlatformSessionManager.h"
 +#include "ServiceDataManager.h"
 +
 +// clazy:excludeall=copyable-polymorphic
@@ -2281,7 +2015,6 @@ index 000000000..bb3868816
 +
 +private:
 +	static constexpr auto SessionProbingInterval = 3000;
-+	static constexpr auto ServerRestartInterval = 5000;
 +
 +	/*!
 +	 * \brief Returns the name of the user owning the current console session
@@ -2306,11 +2039,6 @@ index 000000000..bb3868816
 +	void stopAllServers();
 +
 +	/*!
-+	 * \brief Checks whether the server of the given user is still alive
-+	 */
-+	void checkServerState( const QString& userName );
-+
-+	/*!
 +	 * \brief Writes the launch agent property list of the given user
 +	 *
 +	 * The property list is written to the LaunchAgents directory of the
@@ -2325,16 +2053,15 @@ index 000000000..bb3868816
 +	void removeLaunchAgent( const QString& userName ) const;
 +
 +	ServiceDataManager m_dataManager{};
-+	PlatformSessionManager m_sessionManager{};
 +
 +	QMap<QString, MacOSServerProcess*> m_serverProcesses;
 +};
 diff --git a/plugins/platform/macos/MacOSServiceFunctions.cpp b/plugins/platform/macos/MacOSServiceFunctions.cpp
 new file mode 100644
-index 000000000..6f28bf9bb
+index 000000000..e9a00d871
 --- /dev/null
 +++ b/plugins/platform/macos/MacOSServiceFunctions.cpp
-@@ -0,0 +1,344 @@
+@@ -0,0 +1,317 @@
 +/*
 + * MacOSServiceFunctions.cpp - implementation of MacOSServiceFunctions class
 + *
@@ -2365,6 +2092,7 @@ index 000000000..6f28bf9bb
 +#include <QProcess>
 +#include <QStandardPaths>
 +
++#include "MacOSServiceCore.h"
 +#include "MacOSServiceFunctions.h"
 +
 +namespace {
@@ -2381,6 +2109,46 @@ index 000000000..6f28bf9bb
 +	return QStringLiteral( "io.veyon." ) + name;
 +}
 +
++// Returns the domain the given service lives in.  Root owned services are
++// installed in the system domain, per user services in the GUI domain of
++// the current user.
++QString serviceDomain()
++{
++	if ( geteuid() == 0 )
++	{
++		return QStringLiteral( "system/" );
++	}
++
++	return QStringLiteral( "gui/" ) + QString::number( getuid() ) + QStringLiteral( "/" );
++}
++
++// Returns the path of the property list of the given service.
++QString servicePlistPath( const QString& name )
++{
++	const auto label = serviceLabel( name );
++
++	if ( geteuid() == 0 )
++	{
++		return QStringLiteral( "/Library/LaunchDaemons/%1.plist" ).arg( label );
++	}
++
++	return QDir::homePath() + QStringLiteral( "/Library/LaunchAgents/%1.plist" ).arg( label );
++}
++
++// Runs a launchctl command and returns whether it succeeded.
++bool runLaunchctl( const QStringList& arguments )
++{
++	QProcess process;
++	process.start( QStringLiteral( "/bin/launchctl" ), arguments );
++	if ( process.waitForStarted( 5000 ) == false )
++	{
++		return false;
++	}
++	process.waitForFinished( 5000 );
++
++	return process.exitCode() == 0;
++}
++
 +} // namespace
 +
 +
@@ -2394,33 +2162,26 @@ index 000000000..6f28bf9bb
 +
 +QString MacOSServiceFunctions::launchctlPrint( const QString& name )
 +{
-+	QProcess process;
-+	process.start( QStringLiteral( "/bin/launchctl" ),
-+				  { QStringLiteral( "print" ), QStringLiteral( "system/" ) + serviceLabel( name ) } );
-+	if ( process.waitForStarted( 5000 ) == false )
-+	{
-+		return {};
-+	}
-+	process.waitForFinished( 5000 );
++	const auto label = serviceLabel( name );
 +
-+	const auto output = QString::fromUtf8( process.readAllStandardOutput() );
-+	if ( process.exitCode() == 0 )
++	// The service is looked up in the system domain first and in the GUI
++	// domain of the current user afterwards, so that both root owned and
++	// per user services are found.
++	for( const auto& domain : { QStringLiteral( "system/" ), serviceDomain() } )
 +	{
-+		return output;
-+	}
++		QProcess process;
++		process.start( QStringLiteral( "/bin/launchctl" ),
++					  { QStringLiteral( "print" ), domain + label } );
++		if ( process.waitForStarted( 5000 ) == false )
++		{
++			continue;
++		}
++		process.waitForFinished( 5000 );
 +
-+	// Fall back to the user domain for per-user services.
-+	process.start( QStringLiteral( "/bin/launchctl" ),
-+				  { QStringLiteral( "print" ), QStringLiteral( "gui/" ) + QString::number( getuid() ) + QStringLiteral( "/" ) + serviceLabel( name ) } );
-+	if ( process.waitForStarted( 5000 ) == false )
-+	{
-+		return {};
-+	}
-+	process.waitForFinished( 5000 );
-+
-+	if ( process.exitCode() == 0 )
-+	{
-+		return QString::fromUtf8( process.readAllStandardOutput() );
++		if ( process.exitCode() == 0 )
++		{
++			return QString::fromUtf8( process.readAllStandardOutput() );
++		}
 +	}
 +
 +	return {};
@@ -2450,60 +2211,28 @@ index 000000000..6f28bf9bb
 +
 +bool MacOSServiceFunctions::start( const QString& name )
 +{
-+	QProcess process;
-+	process.start( QStringLiteral( "/bin/launchctl" ),
-+				  { QStringLiteral( "start" ), QStringLiteral( "system/" ) + serviceLabel( name ) } );
-+	if ( process.waitForStarted( 5000 ) == false )
-+	{
-+		return false;
-+	}
-+	process.waitForFinished( 5000 );
++	const auto label = serviceLabel( name );
 +
-+	if ( process.exitCode() == 0 )
++	if ( runLaunchctl( { QStringLiteral( "start" ), QStringLiteral( "system/" ) + label } ) )
 +	{
 +		return true;
 +	}
 +
-+	process.start( QStringLiteral( "/bin/launchctl" ),
-+				  { QStringLiteral( "start" ),
-+					QStringLiteral( "gui/" ) + QString::number( getuid() ) + QStringLiteral( "/" ) + serviceLabel( name ) } );
-+	if ( process.waitForStarted( 5000 ) == false )
-+	{
-+		return false;
-+	}
-+	process.waitForFinished( 5000 );
-+
-+	return process.exitCode() == 0;
++	return runLaunchctl( { QStringLiteral( "start" ), serviceDomain() + label } );
 +}
 +
 +
 +
 +bool MacOSServiceFunctions::stop( const QString& name )
 +{
-+	QProcess process;
-+	process.start( QStringLiteral( "/bin/launchctl" ),
-+				  { QStringLiteral( "stop" ), QStringLiteral( "system/" ) + serviceLabel( name ) } );
-+	if ( process.waitForStarted( 5000 ) == false )
-+	{
-+		return false;
-+	}
-+	process.waitForFinished( 5000 );
++	const auto label = serviceLabel( name );
 +
-+	if ( process.exitCode() == 0 )
++	if ( runLaunchctl( { QStringLiteral( "stop" ), QStringLiteral( "system/" ) + label } ) )
 +	{
 +		return true;
 +	}
 +
-+	process.start( QStringLiteral( "/bin/launchctl" ),
-+				  { QStringLiteral( "stop" ),
-+					QStringLiteral( "gui/" ) + QString::number( getuid() ) + QStringLiteral( "/" ) + serviceLabel( name ) } );
-+	if ( process.waitForStarted( 5000 ) == false )
-+	{
-+		return false;
-+	}
-+	process.waitForFinished( 5000 );
-+
-+	return process.exitCode() == 0;
++	return runLaunchctl( { QStringLiteral( "stop" ), serviceDomain() + label } );
 +}
 +
 +
@@ -2534,14 +2263,12 @@ index 000000000..6f28bf9bb
 +	plist += QStringLiteral( "\t<key>ProcessType</key>\n\t<string>Interactive</string>\n" );
 +	plist += QStringLiteral( "</dict>\n</plist>\n" );
 +
-+	QString plistPath;
-+	if ( geteuid() == 0 )
++	QString plistPath = servicePlistPath( name );
++
++	// The directory of per user agents may not exist yet.
++	if ( geteuid() != 0 )
 +	{
-+		plistPath = QStringLiteral( "/Library/LaunchDaemons/%1.plist" ).arg( label );
-+	}
-+	else
-+	{
-+		plistPath = QDir::homePath() + QStringLiteral( "/Library/LaunchAgents/%1.plist" ).arg( label );
++		QDir().mkpath( QFileInfo( plistPath ).absolutePath() );
 +	}
 +
 +	QFile plistFile( plistPath );
@@ -2566,16 +2293,12 @@ index 000000000..6f28bf9bb
 +		return false;
 +	}
 +
-+	// Load the service so that it takes effect immediately.
-+	process.start( QStringLiteral( "/bin/launchctl" ),
-+				  { QStringLiteral( "load" ), QStringLiteral( "-w" ), plistPath } );
-+	if ( process.waitForStarted( 5000 ) == false )
-+	{
-+		return false;
-+	}
-+	process.waitForFinished( 5000 );
++	// Unload a previously installed service, so that the new property list
++	// is the one that is actually used.
++	runLaunchctl( { QStringLiteral( "bootout" ), serviceDomain() + label } );
 +
-+	return process.exitCode() == 0;
++	// Load the service so that it takes effect immediately.
++	return runLaunchctl( { QStringLiteral( "bootstrap" ), serviceDomain(), plistPath } );
 +}
 +
 +
@@ -2583,29 +2306,16 @@ index 000000000..6f28bf9bb
 +bool MacOSServiceFunctions::uninstall( const QString& name )
 +{
 +	const auto label = serviceLabel( name );
++	const auto plistPath = servicePlistPath( name );
 +
-+	QString plistPath;
-+	if ( geteuid() == 0 )
-+	{
-+		plistPath = QStringLiteral( "/Library/LaunchDaemons/%1.plist" ).arg( label );
-+	}
-+	else
-+	{
-+		plistPath = QDir::homePath() + QStringLiteral( "/Library/LaunchAgents/%1.plist" ).arg( label );
-+	}
-+
-+	QProcess process;
-+	process.start( QStringLiteral( "/bin/launchctl" ),
-+				  { QStringLiteral( "unload" ), QStringLiteral( "-w" ), plistPath } );
-+	if ( process.waitForStarted( 5000 ) == false )
-+	{
-+		return false;
-+	}
-+	process.waitForFinished( 5000 );
++	// Unload the service before removing its property list.
++	const auto unloaded = runLaunchctl( { QStringLiteral( "bootout" ), serviceDomain() + label } );
 +
 +	const bool removed = QFile::remove( plistPath );
 +
-+	return removed || process.exitCode() == 0;
++	// The service is considered uninstalled when its property list is gone
++	// or when it was not loaded in the first place.
++	return removed || unloaded;
 +}
 +
 +
@@ -2615,16 +2325,7 @@ index 000000000..6f28bf9bb
 +	// The start mode of a launchd service is controlled by the RunAtLoad and
 +	// KeepAlive keys of its property list.
 +	const auto label = serviceLabel( name );
-+
-+	QString plistPath;
-+	if ( geteuid() == 0 )
-+	{
-+		plistPath = QStringLiteral( "/Library/LaunchDaemons/%1.plist" ).arg( label );
-+	}
-+	else
-+	{
-+		plistPath = QDir::homePath() + QStringLiteral( "/Library/LaunchAgents/%1.plist" ).arg( label );
-+	}
++	const auto plistPath = servicePlistPath( name );
 +
 +	if ( QFile::exists( plistPath ) == false )
 +	{
@@ -2664,7 +2365,6 @@ index 000000000..6f28bf9bb
 +	// When running as a launchd service the entry point is invoked directly,
 +	// as the service process is the launchd job itself.
 +	vInfo() << "running as service:" << name;
-+	Q_UNUSED( name )
 +	serviceEntryPoint();
 +	return true;
 +}
@@ -2733,199 +2433,6 @@ index 000000000..c9dcdb140
 +private:
 +	static QString launchctlPrint( const QString& name );
 +};
-diff --git a/plugins/platform/macos/MacOSSessionFunctions.cpp b/plugins/platform/macos/MacOSSessionFunctions.cpp
-new file mode 100644
-index 000000000..5b55f620d
---- /dev/null
-+++ b/plugins/platform/macos/MacOSSessionFunctions.cpp
-@@ -0,0 +1,187 @@
-+/*
-+ * MacOSSessionFunctions.cpp - implementation of MacOSSessionFunctions class
-+ *
-+ * Copyright (c) 2026 Veyon Community
-+ *
-+ * This file is part of Veyon - https://veyon.io
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public
-+ * License as published by the Free Software Foundation; either
-+ * version 2 of the License, or (at your option) any later version.
-+ *
-+ * This program is distributed in the hope that it will be useful,
-+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-+ * General Public License for more details.
-+ *
-+ * You should have received a copy of the GNU General Public
-+ * License along with this program (see COPYING); if not, write to the
-+ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
-+ * Boston, MA 02111-1307, USA.
-+ *
-+ */
-+
-+#include <unistd.h>
-+
-+#include <QDateTime>
-+#include <QDir>
-+#include <QHostInfo>
-+#include <QProcess>
-+#include <QProcessEnvironment>
-+#include <QSysInfo>
-+
-+#include "MacOSSessionFunctions.h"
-+
-+
-+
-+PlatformSessionFunctions::SessionId MacOSSessionFunctions::currentSessionId()
-+{
-+	// macOS does not have a session id concept comparable to the Linux one.
-+	// Use the id of the security session of the current process, which is
-+	// stable for the lifetime of the login session.
-+	return DefaultSessionId;
-+}
-+
-+
-+
-+PlatformSessionFunctions::SessionUptime MacOSSessionFunctions::currentSessionUptime() const
-+{
-+	// The login session start time can be obtained from the "who" command or
-+	// from the ConsoleUser directory.  Use the "who -u" output which reports
-+	// the login time of the console user.
-+	QProcess process;
-+	process.start( QStringLiteral( "/usr/bin/who" ), { QStringLiteral( "-u" ) } );
-+	if ( process.waitForStarted( 3000 ) == false )
-+	{
-+		return InvalidSessionUptime;
-+	}
-+	process.waitForFinished( 3000 );
-+
-+	const auto output = QString::fromUtf8( process.readAllStandardOutput() );
-+	const auto lines = output.split( QLatin1Char( '\n' ), Qt::SkipEmptyParts );
-+	if ( lines.isEmpty() )
-+	{
-+		return InvalidSessionUptime;
-+	}
-+
-+	// The last column of "who -u" contains the login time in the format
-+	// "HH:MM" for today.
-+	const auto fields = lines.first().split( QLatin1Char( ' ' ), Qt::SkipEmptyParts );
-+	if ( fields.isEmpty() )
-+	{
-+		return InvalidSessionUptime;
-+	}
-+
-+	const auto timeString = fields.last();
-+	const auto timeParts = timeString.split( QLatin1Char( ':' ) );
-+	if ( timeParts.size() != 2 )
-+	{
-+		return InvalidSessionUptime;
-+	}
-+
-+	bool ok = false;
-+	const auto hours = timeParts.at( 0 ).toInt( &ok );
-+	if ( ok == false )
-+	{
-+		return InvalidSessionUptime;
-+	}
-+	const auto minutes = timeParts.at( 1 ).toInt( &ok );
-+	if ( ok == false )
-+	{
-+		return InvalidSessionUptime;
-+	}
-+
-+	const auto now = QDateTime::currentDateTime();
-+	QDateTime loginTime( now.date(), QTime( hours, minutes ) );
-+	if ( loginTime > now )
-+	{
-+		// The login happened yesterday.
-+		loginTime = loginTime.addDays( -1 );
-+	}
-+
-+	return static_cast<SessionUptime>( loginTime.secsTo( now ) );
-+}
-+
-+
-+
-+QString MacOSSessionFunctions::currentSessionClientAddress() const
-+{
-+	// The client of a local session is the machine itself.
-+	QString address;
-+	const auto hostInfo = QHostInfo::fromName( QHostInfo::localHostName() );
-+	if ( hostInfo.error() != QHostInfo::NoError )
-+	{
-+		return {};
-+	}
-+
-+	for ( const auto& addressEntry : hostInfo.addresses() )
-+	{
-+		if ( addressEntry.protocol() == QAbstractSocket::IPv4Protocol )
-+		{
-+			address = addressEntry.toString();
-+			break;
-+		}
-+	}
-+
-+	return address;
-+}
-+
-+
-+
-+QString MacOSSessionFunctions::currentSessionClientName() const
-+{
-+	return QHostInfo::localHostName();
-+}
-+
-+
-+
-+QString MacOSSessionFunctions::currentSessionHostName() const
-+{
-+	return QSysInfo::machineHostName();
-+}
-+
-+
-+
-+QString MacOSSessionFunctions::currentSessionType() const
-+{
-+	// Distinguish between a console session and a remote (SSH/VNC) one.
-+	const auto sessionType = qEnvironmentVariable( "XPC_SERVICE_NAME" );
-+	if ( sessionType.isEmpty() == false )
-+	{
-+		return QStringLiteral( "remote" );
-+	}
-+
-+	return QStringLiteral( "console" );
-+}
-+
-+
-+
-+bool MacOSSessionFunctions::currentSessionHasUser() const
-+{
-+	return getuid() != 0;
-+}
-+
-+
-+
-+PlatformSessionFunctions::EnvironmentVariables MacOSSessionFunctions::currentSessionEnvironmentVariables() const
-+{
-+	EnvironmentVariables variables;
-+	const auto environment = QProcessEnvironment::systemEnvironment();
-+	const auto keys = environment.keys();
-+	for ( const auto& key : keys )
-+	{
-+		variables.insert( key, environment.value( key ) );
-+	}
-+	return variables;
-+}
-+
-+
-+
-+QVariant MacOSSessionFunctions::querySettingsValueInCurrentSession(const QString& key) const
-+{
-+	// macOS stores its per-user preferences in the CFPreferences mechanism.
-+	// Map the well known Veyon keys to their macOS equivalents.
-+	Q_UNUSED( key )
-+	return {};
-+}
 diff --git a/plugins/platform/macos/MacOSSessionFunctions.h b/plugins/platform/macos/MacOSSessionFunctions.h
 new file mode 100644
 index 000000000..f7b1ca255
@@ -2975,260 +2482,6 @@ index 000000000..f7b1ca255
 +	EnvironmentVariables currentSessionEnvironmentVariables() const override;
 +	QVariant querySettingsValueInCurrentSession(const QString& key) const override;
 +};
-diff --git a/plugins/platform/macos/MacOSUserFunctions.cpp b/plugins/platform/macos/MacOSUserFunctions.cpp
-new file mode 100644
-index 000000000..4bbc9ae2c
---- /dev/null
-+++ b/plugins/platform/macos/MacOSUserFunctions.cpp
-@@ -0,0 +1,248 @@
-+/*
-+ * MacOSUserFunctions.cpp - implementation of MacOSUserFunctions class
-+ *
-+ * Copyright (c) 2026 Veyon Community
-+ *
-+ * This file is part of Veyon - https://veyon.io
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public
-+ * License as published by the Free Software Foundation; either
-+ * version 2 of the License, or (at your option) any later version.
-+ *
-+ * This program is distributed in the hope that it will be useful,
-+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-+ * General Public License for more details.
-+ *
-+ * You should have received a copy of the GNU General Public
-+ * License along with this program (see COPYING); if not, write to the
-+ * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
-+ * Boston, MA 02111-1307, USA.
-+ *
-+ */
-+
-+#include <unistd.h>
-+
-+#include <QProcess>
-+#include <QStringList>
-+
-+#include "MacOSUserFunctions.h"
-+
-+extern "C" {
-+#include <pwd.h>
-+#include <grp.h>
-+}
-+
-+namespace {
-+
-+// Run a command and return its trimmed standard output.
-+QString runCommand( const QString& program, const QStringList& arguments )
-+{
-+	QProcess process;
-+	process.start( program, arguments );
-+	if ( process.waitForStarted( 5000 ) == false )
-+	{
-+		return {};
-+	}
-+	process.waitForFinished( 5000 );
-+
-+	if ( process.exitCode() != 0 )
-+	{
-+		return {};
-+	}
-+
-+	return QString::fromUtf8( process.readAllStandardOutput() ).trimmed();
-+}
-+
-+} // namespace
-+
-+
-+
-+QString MacOSUserFunctions::queryCurrentUserProperty(UserProperty property)
-+{
-+	const auto* user = ::getpwuid( ::getuid() );
-+	if ( user == nullptr )
-+	{
-+		return {};
-+	}
-+
-+	switch ( property )
-+	{
-+		case UserProperty::LoginName:
-+			return QString::fromUtf8( user->pw_name );
-+
-+		case UserProperty::FullName:
-+		{
-+			// The full name is stored in the GECOS field of the password
-+			// database.  Use "dscl" to read the real-name attribute, which
-+			// also works for accounts from a directory service.
-+			const auto fullName = runCommand( QStringLiteral( "/usr/bin/dscl" ),
-+											 { QStringLiteral( "." ), QStringLiteral( "read" ),
-+											   QStringLiteral( "/Users/%1" ).arg( QString::fromUtf8( user->pw_name ) ),
-+											   QStringLiteral( "RealName" ) } );
-+			if ( fullName.isEmpty() == false )
-+			{
-+				return fullName;
-+			}
-+
-+			return QString::fromUtf8( user->pw_gecos );
-+		}
-+
-+		case UserProperty::None:
-+			break;
-+	}
-+
-+	return {};
-+}
-+
-+
-+
-+QStringList MacOSUserFunctions::userGroups( bool queryDomainGroups )
-+{
-+	// The "staff" group contains all users of the machine.
-+	if ( queryDomainGroups )
-+	{
-+		const auto domainGroups = runCommand( QStringLiteral( "/usr/bin/dscl" ),
-+											  { QStringLiteral( "." ), QStringLiteral( "read" ),
-+												QStringLiteral( "/Users/%1" ).arg( QDir::home().dirName() ),
-+												QStringLiteral( "MemberOf" ) } );
-+		if ( domainGroups.isEmpty() == false )
-+		{
-+			QStringList groups;
-+			const auto lines = domainGroups.split( QLatin1Char( '\n' ), Qt::SkipEmptyParts );
-+			for ( const auto& line : lines )
-+			{
-+				auto group = line.trimmed();
-+				if ( group.startsWith( QLatin1String( "MemberOf: " ) ) )
-+				{
-+					group = group.mid( 10 ).trimmed();
-+				}
-+				if ( group.isEmpty() == false )
-+				{
-+					groups += group;
-+				}
-+			}
-+			return groups;
-+		}
-+	}
-+
-+	return { QStringLiteral( "staff" ) };
-+}
-+
-+
-+
-+QStringList MacOSUserFunctions::groupsOfUser( const QString& username, bool queryDomainGroups )
-+{
-+	Q_UNUSED( queryDomainGroups )
-+
-+	QStringList groups;
-+
-+	const auto* user = ::getpwnam( username.toUtf8().constData() );
-+	if ( user != nullptr )
-+	{
-+		int groupCount = 0;
-+		::getgrouplist( user->pw_name, user->pw_gid, nullptr, &groupCount );
-+		if ( groupCount > 0 )
-+		{
-+			QVector<int> groupIds( groupCount );
-+			if ( ::getgrouplist( user->pw_name, user->pw_gid, groupIds.data(), &groupCount ) >= 0 )
-+			{
-+				for ( const auto groupId : groupIds )
-+				{
-+					const auto* group = ::getgrgid( static_cast<gid_t>( groupId ) );
-+					if ( group != nullptr )
-+					{
-+						groups += QString::fromUtf8( group->gr_name );
-+					}
-+				}
-+			}
-+		}
-+	}
-+
-+	return groups;
-+}
-+
-+
-+
-+QString MacOSUserFunctions::userGroupSecurityIdentifier(const QString& groupName)
-+{
-+	// macOS groups are identified by their POSIX group id.
-+	const auto* group = ::getgrnam( groupName.toUtf8().constData() );
-+	if ( group == nullptr )
-+	{
-+		return {};
-+	}
-+
-+	return QString::number( static_cast<uint>( group->gr_gid ) );
-+}
-+
-+
-+
-+bool MacOSUserFunctions::isAnyUserLoggedOn()
-+{
-+	// The console user is reported by the WindowServer.  A non-empty
-+	// "SConsoleUser" key means that a user is logged in graphically.
-+	QProcess process;
-+	process.start( QStringLiteral( "/usr/bin/stat" ),
-+				  { QStringLiteral( "-f" ), QStringLiteral( "%Su" ), QStringLiteral( "/dev/console" ) } );
-+	if ( process.waitForStarted( 3000 ) == false )
-+	{
-+		return false;
-+	}
-+	process.waitForFinished( 3000 );
-+
-+	const auto user = QString::fromUtf8( process.readAllStandardOutput() ).trimmed();
-+	return user.isEmpty() == false && user != QLatin1String( "root" );
-+}
-+
-+
-+
-+bool MacOSUserFunctions::prepareLogon( const QString& username, const Password& password )
-+{
-+	// macOS does not support a separate preparation phase for logons.
-+	Q_UNUSED( username )
-+	Q_UNUSED( password )
-+	return true;
-+}
-+
-+
-+
-+bool MacOSUserFunctions::performLogon( const QString& username, const Password& password )
-+{
-+	// Logging a user into a graphical session on macOS requires either
-+	// Fast User Switching or a privileged helper.  Neither is available to a
-+	// regular Veyon installation, so this is not supported.
-+	Q_UNUSED( username )
-+	Q_UNUSED( password )
-+	return false;
-+}
-+
-+
-+
-+void MacOSUserFunctions::logoff()
-+{
-+	// Logging off the current user is not supported.
-+}
-+
-+
-+
-+bool MacOSUserFunctions::authenticate( const QString& username, const Password& password )
-+{
-+	// Authentication is delegated to the Open Directory via the
-+	// "/usr/bin/dscl" "-authonly" command, which verifies a password
-+	// without changing the session state.
-+	const auto passwordString = QString::fromUtf8( password.constData() );
-+
-+	QProcess process;
-+	process.start( QStringLiteral( "/usr/bin/dscl" ),
-+				  { QStringLiteral( "." ), QStringLiteral( "-authonly" ),
-+					username, passwordString } );
-+	if ( process.waitForStarted( 5000 ) == false )
-+	{
-+		return false;
-+	}
-+	process.waitForFinished( 15000 );
-+
-+	return process.exitCode() == 0;
-+}
 diff --git a/plugins/platform/macos/MacOSUserFunctions.h b/plugins/platform/macos/MacOSUserFunctions.h
 new file mode 100644
 index 000000000..ee5b73dfd
