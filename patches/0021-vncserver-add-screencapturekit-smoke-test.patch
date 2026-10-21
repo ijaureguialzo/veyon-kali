@@ -1,0 +1,164 @@
+diff --git a/plugins/vncserver/screencapturekit/sck_smoke_test.cpp b/plugins/vncserver/screencapturekit/sck_smoke_test.cpp
+new file mode 100644
+index 000000000..40bae4fa7
+--- /dev/null
++++ b/plugins/vncserver/screencapturekit/sck_smoke_test.cpp
+@@ -0,0 +1,108 @@
++/*
++ * sck_smoke_test.cpp - standalone test of the ScreenCaptureKit capturer
++ *
++ * This test links directly against the capturer of the plugin, so that the
++ * capture can be verified without running the whole VNC server.  It is not
++ * part of the plugin and is therefore not installed.
++ *
++ * It reports whether ScreenCaptureKit is available, whether the screen
++ * recording permission has been granted, how many displays it found and
++ * whether it received any frame.
++ */
++
++#include <QCoreApplication>
++#include <QDebug>
++#include <QImage>
++#include <QSize>
++#include <QTimer>
++
++#include "ScreenCaptureKitCapturer.h"
++
++int main( int argc, char** argv )
++{
++	QCoreApplication app( argc, argv );
++
++	qInfo() << "ScreenCaptureKit disponible:" << ScreenCaptureKitCapturer::isAvailable();
++	qInfo() << "permiso de Screen Recording:" << ScreenCaptureKitCapturer::hasScreenRecordingPermission();
++
++	ScreenCaptureKitCapturer capturer;
++
++	const bool captureAllDisplays = ( argc < 2 ) || ( qstrcmp( argv[1], "single" ) != 0 );
++	const int displayIndex = ( argc > 2 ) ? QString( argv[2] ).toInt() : 0;
++
++	if( capturer.start( 15, captureAllDisplays, displayIndex, QSize( 1920, 1200 ) ) == false )
++	{
++		qCritical() << "no se pudo iniciar la captura:" << capturer.lastError();
++		return 1;
++	}
++
++	qInfo() << "captura iniciada, displays combinados:" << captureAllDisplays;
++
++	int received = 0;
++	QObject::connect( &capturer, &ScreenCaptureKitCapturer::frameCaptured, [&]() {
++		++received;
++	} );
++
++	QObject::connect( &capturer, &ScreenCaptureKitCapturer::captureError, []( const QString& message ) {
++		qCritical() << "error de captura:" << message;
++	} );
++
++	// Give the capture a few seconds to deliver the first frames.
++	QTimer::singleShot( 5000, &app, [&]() {
++		capturer.resetNewFrame();
++		capturer.composeFrame();
++
++		const auto frame = capturer.currentFrame();
++		const auto size = capturer.framebufferSize();
++
++		qInfo() << "frames recibidos:" << received;
++		qInfo() << "tamaño del framebuffer:" << size;
++		qInfo() << "tamaño de la imagen:" << frame.size();
++		qInfo() << "formato:" << frame.format();
++		qInfo() << "imagen válida:" << !frame.isNull();
++
++		if( frame.isNull() )
++		{
++			qCritical() << "no se ha recibido ningún frame";
++			capturer.stop();
++			app.exit( 1 );
++			return;
++		}
++
++		// A frame that is completely black is not a real capture.
++		const auto converted = frame.convertToFormat( QImage::Format_RGB32 );
++		quint64 nonBlack = 0;
++		for( int y = 0; y < converted.height(); ++y )
++		{
++			const auto* line = converted.constScanLine( y );
++			for( int x = 0; x < converted.width(); ++x )
++			{
++				if( line[x] != 0 )
++				{
++					++nonBlack;
++				}
++			}
++		}
++
++		const auto total = quint64( converted.width() ) * quint64( converted.height() );
++		qInfo() << "píxeles no negros:" << nonBlack << "de" << total;
++
++		if( converted.save( "/tmp/sck-frame.png" ) )
++		{
++			qInfo() << "frame guardado en /tmp/sck-frame.png";
++		}
++
++		if( nonBlack == 0 )
++		{
++			qCritical() << "el frame es completamente negro";
++			capturer.stop();
++			app.exit( 1 );
++			return;
++		}
++
++		capturer.stop();
++		app.exit( 0 );
++	} );
++
++	return app.exec();
++}
+diff --git a/plugins/vncserver/screencapturekit/CMakeLists.txt b/plugins/vncserver/screencapturekit/CMakeLists.txt
+index 53b332b35..8441ba5e5 100644
+--- a/plugins/vncserver/screencapturekit/CMakeLists.txt
++++ b/plugins/vncserver/screencapturekit/CMakeLists.txt
+@@ -43,3 +43,45 @@ else()
+ endif()
+ 
+ target_compile_options(screencapturekit-vnc-server PRIVATE -Wno-parentheses)
++
++# Standalone test of the capturer.  It is not part of the plugin and is not
++# installed.  It allows the capture to be verified without running the whole
++# VNC server, which is useful on systems where the displays are asleep.
++add_executable(screencapturekit-smoke-test
++	ScreenCaptureKitCapturer.h
++	ScreenCaptureKitCapturer.mm
++	sck_smoke_test.cpp
++)
++
++set_source_files_properties(
++	ScreenCaptureKitCapturer.mm
++	PROPERTIES
++		COMPILE_FLAGS "-x objective-c++"
++		SKIP_UNITY_BUILD_INCLUSION TRUE
++		SKIP_PRECOMPILE_HEADERS TRUE
++)
++
++target_include_directories(screencapturekit-smoke-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
++
++# El ejecutable se prueba en el arbol de compilacion, no dentro del bundle,
++# asi que necesita encontrar el core y los frameworks de Qt en las rutas
++# donde los deja el propio build.  No se instala, de modo que solo
++# interesa el rpath.
++#
++# El proyecto fuerza CMAKE_BUILD_WITH_INSTALL_RPATH, asi que el rpath de
++# compilacion es el de instalacion y hay que anadir el directorio del core
++# explicitamente.
++set_target_properties(screencapturekit-smoke-test PROPERTIES
++	INSTALL_RPATH "${CMAKE_BINARY_DIR}/core;${CMAKE_INSTALL_RPATH}"
++)
++
++target_link_libraries(screencapturekit-smoke-test PRIVATE
++	veyon-core
++	Qt${QT_MAJOR_VERSION}::Core
++	Qt${QT_MAJOR_VERSION}::Gui
++	"-framework ScreenCaptureKit"
++	"-framework AVFoundation"
++	"-framework CoreMedia"
++	"-framework CoreVideo"
++	"-framework CoreGraphics"
++)
