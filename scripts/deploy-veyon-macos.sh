@@ -698,19 +698,97 @@ for binary in "$BUNDLE"/Contents/MacOS/* "$BUNDLE"/Contents/PlugIns/*.so "$BUNDL
 done
 
 # ---------------------------------------------------------------------------
-# Firmado ad hoc
+# Firma
 # ---------------------------------------------------------------------------
 
-# Firmar los binarios de forma ad hoc, para que el bundle pueda ejecutarse
-# en un equipo con Gatekeeper activo.
-echo "── Firmado ad hoc ──"
-find "$BUNDLE" \( -name "*.dylib" -o -name "*.so" -o -name "*.framework" \) \
-    -exec codesign --force --sign - --timestamp=none {} \; 2>/dev/null || true
-for app in "$BUNDLE"/Contents/MacOS/*; do
-    [ -f "$app" ] || continue
-    codesign --force --sign - --timestamp=none "$app" 2>/dev/null || true
+# Identidad de firma de codigo, si hay alguna disponible.
+#
+# Se busca un certificado "Developer ID Application", que es el que permite
+# distribuir fuera del equipo de desarrollo.  Si no hay ninguno, se busca
+# uno de desarrollo de Apple, que al menos permite que el bundle arranque
+# sin el aviso de Gatekeeper cuando lleva el atributo de quarantine.
+#
+# La busqueda se hace por el nombre del certificado, no por su hash, para
+# que el script no dependa de una identidad concreta.
+CODESIGN_IDENTITY=""
+for candidate in "Developer ID Application" "Apple Development" "Mac Developer"; do
+    # El "|| true" es necesario: con "set -e" y "pipefail", un "grep"
+    # sin coincidencias abortaria el script entero.
+    identity=$(security find-identity -v -p codesigning 2>/dev/null \
+        | grep "\"$candidate" \
+        | head -1 \
+        | sed 's/.*"\(.*\)".*/\1/' || true)
+    if [ -n "$identity" ]; then
+        CODESIGN_IDENTITY="$identity"
+        break
+    fi
 done
-codesign --force --sign - --timestamp=none "$BUNDLE" 2>/dev/null || true
+
+if [ -n "$CODESIGN_IDENTITY" ]; then
+    echo "── Firmado con la identidad de Apple ──"
+    echo "    $CODESIGN_IDENTITY"
+
+    # Se firma de dentro hacia fuera: primero las librerias y los
+    # plugins, despues los ejecutables, y por ultimo el bundle.  El
+    # orden importa, porque la firma del bundle incluye el hash de todo
+    # lo que contiene.
+    #
+    # NO se usa "--deep": esa opcion firma el contenido con la misma
+    # identidad, pero no repara el contenido ya firmado con una
+    # identidad distinta, y ademas deja el bundle en un estado que
+    # "--verify --deep" rechaza con "nested code is modified or invalid".
+    #
+    # Tampoco se activa el hardened runtime ("--options runtime"): los
+    # plugins cargados con dlopen() que forman parte del proceso tienen
+    # que compartir Team ID con el proceso principal, y la comprobacion
+    # se hace en tiempo de ejecucion.  Con el hardened runtime el
+    # complemento de plataforma no llega a cargarse y el programa
+    # termina con "PlatformPluginManager: no platform plugin available!".
+    for lib in $(find "$BUNDLE" -type f \( -name "*.dylib" -o -name "*.so" \)); do
+        codesign --force --sign "$CODESIGN_IDENTITY" --timestamp=none "$lib" 2>/dev/null || true
+    done
+    for app in "$BUNDLE"/Contents/MacOS/*; do
+        [ -f "$app" ] || continue
+        codesign --force --sign "$CODESIGN_IDENTITY" --timestamp=none "$app" 2>/dev/null || true
+    done
+
+    # Los frameworks de Qt tienen una estructura de versiones con
+    # enlaces simbolicos ("Versions/A", "Versions/Current" y el
+    # "QtGui" de la raiz).  Firmar solo el binario no basta: hay que
+    # firmar el framework entero, para que la firma incluya los
+    # recursos y las bibliotecas auxiliares.
+    #
+    # Se firma cada framework por su directorio, y no por su binario,
+    # porque "codesign" sobre un framework con enlaces simbolicos
+    # produce una firma invalida ("code or signature have been
+    # modified") en la verificacion profunda.
+    for framework in "$BUNDLE"/Contents/Frameworks/*.framework; do
+        [ -d "$framework" ] || continue
+        codesign --force --sign "$CODESIGN_IDENTITY" --timestamp=none \
+            "$framework" 2>/dev/null || true
+    done
+
+    codesign --force --sign "$CODESIGN_IDENTITY" --timestamp=none "$BUNDLE" 2>/dev/null || true
+
+    if codesign --verify --deep --strict "$BUNDLE" 2>/dev/null; then
+        echo "    verificacion de la firma: ok"
+    else
+        echo "    aviso: la verificacion de la firma ha fallado"
+    fi
+else
+    # Sin identidad de Apple se firma ad hoc, que es lo que permite
+    # ejecutar el bundle en un equipo con Gatekeeper activo, aunque no
+    # satisface la evaluacion de Gatekeeper.
+    echo "── Firmado ad hoc ──"
+    echo "    no hay ninguna identidad de Apple en el llavero"
+    find "$BUNDLE" \( -name "*.dylib" -o -name "*.so" -o -name "*.framework" \) \
+        -exec codesign --force --sign - --timestamp=none {} \; 2>/dev/null || true
+    for app in "$BUNDLE"/Contents/MacOS/*; do
+        [ -f "$app" ] || continue
+        codesign --force --sign - --timestamp=none "$app" 2>/dev/null || true
+    done
+    codesign --force --sign - --timestamp=none "$BUNDLE" 2>/dev/null || true
+fi
 
 # ---------------------------------------------------------------------------
 # Quarantine
@@ -723,14 +801,27 @@ codesign --force --sign - --timestamp=none "$BUNDLE" 2>/dev/null || true
 #     Killed: 9
 #
 # El aviso que muestra el Finder ("Apple no ha podido verificar...") viene
-# de ahi, y no de la firma en si.  Una firma ad hoc no puede pasar la
-# validacion de Gatekeeper, porque no procede de un desarrollador
-# identificado, asi que la unica forma de compilar en local sin que aparezca
-# el aviso es quitar el atributo de quarantine.
+# de ahi, y no de la firma en si.
+#
+# Con una firma de Apple (Developer ID o Apple Development) el proceso
+# arranca igualmente aunque conserve el atributo, porque el sistema puede
+# comprobar que la firma es valida.  Con una firma ad hoc no hay forma de
+# que Gatekeeper acepte el bundle, de modo que hay que quitar el
+# atributo, que es lo que ponen hdiutil, los navegadores y el Finder al
+# descargar un fichero.
 #
 # El bundle se genera en esta maquina, de modo que no tiene por que pasar
 # por la comprobacion de descargas.  Se quita el atributo de forma
 # recursiva, porque puede estar en cualquier fichero del bundle.
+#
+# El atributo se quita SIEMPRE, incluso cuando el bundle va firmado con
+# una identidad de Apple.  Un certificado de desarrollo no esta autorizado
+# para ejecutar codigo fuera del entorno de desarrollo, de modo que
+# Gatekeeper lo rechaza igual ("spctl --assess" devuelve "rejected") y
+# muestra un dialogo de aviso que deja el proceso esperando.  Un
+# certificado de Developer ID si pasa esa evaluacion, pero mientras no
+# haya uno, quitar el atributo es lo unico que garantiza que el bundle
+# arranque sin intervencion del usuario.
 echo "── Quitar el atributo de quarantine ──"
 if xattr -dr com.apple.quarantine "$BUNDLE" 2>/dev/null; then
     echo "    ok"

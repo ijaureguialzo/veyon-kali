@@ -12,19 +12,15 @@
 # Por que hace falta
 # ----------------
 #
-# El bundle se firma ad hoc, porque no hay un certificado de Developer ID.
-# Una firma ad hoc no pasa la validacion de Gatekeeper: el sistema no puede
-# comprobar que el binario proceda de un desarrollador identificado.  Si el
-# bundle ademas lleva el atributo com.apple.quarantine, Gatekeeper mata el
-# proceso antes de que arranque:
+# El aviso que ve el usuario no viene de la firma, sino del atributo
+# com.apple.quarantine.  Si el bundle lo lleva, Gatekeeper mata el proceso
+# antes de que arranque:
 #
 #     $ /Applications/Veyon.app/Contents/MacOS/veyon-cli about
 #     Killed: 9
 #
-# El aviso que ve el usuario viene de ahi, no de la firma en si.  La
-# solucion para un bundle construido en local es quitar el atributo de
-# quarantine, que es lo que hdiutil y los navegadores ponen al descargar
-# un fichero.
+# El atributo lo ponen hdiutil, los navegadores y el Finder al descargar
+# un fichero.  La solucion para un bundle construido en local es quitarlo.
 #
 # Este script hace tres cosas:
 #
@@ -32,6 +28,17 @@
 #   2. Quita el atributo com.apple.quarantine de forma recursiva.
 #   3. Registra la aplicacion en la base de datos de reglas de Gatekeeper,
 #      si el sistema lo permite sin privilegios de administrador.
+#
+# Sobre la firma
+# --------------
+#
+# El despliegue firma el bundle con una identidad de Apple del llavero,
+# si hay alguna, y con firma ad hoc si no.  La firma de desarrollo hace
+# que el bundle sea verificable, pero no hace que Gatekeeper lo acepte
+# fuera del entorno de desarrollo: "spctl --assess" sigue devolviendo
+# "rejected" y el sistema muestra un dialogo de aviso que deja el
+# proceso esperando.  Por eso el atributo de quarantine se quita siempre,
+# tanto con firma de Apple como ad hoc.
 #
 # Para una distribucion publica haria falta un certificado de Developer ID
 # y la notarizacion, que es un camino distinto y no se cubre aqui.
@@ -93,6 +100,11 @@ fi
 # recursiva porque el atributo puede estar en cualquier fichero del
 # bundle, y basta con que este en el ejecutable principal para que el
 # sistema mate el proceso.
+#
+# Se quita aunque el bundle este firmado con una identidad de Apple: un
+# certificado de desarrollo no pasa la evaluacion de Gatekeeper fuera del
+# entorno de desarrollo, y el sistema mostraria un dialogo de aviso que
+# dejaria el proceso esperando.
 echo "── quitar el atributo de quarantine ──"
 if xattr -dr com.apple.quarantine "$INSTALLED_BUNDLE" 2>/dev/null; then
     echo "    ok"
