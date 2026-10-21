@@ -103,6 +103,10 @@ macos:
 macos-package:
 	@bash scripts/package-veyon-macos.sh
 
+## macos-install: instala el bundle en /Applications y evita el aviso de Gatekeeper
+macos-install:
+	@bash scripts/install-veyon-macos.sh
+
 ## macos-clean: elimina el workspace de compilación de macOS
 macos-clean:
 	@bash scripts/build-veyon-macos.sh --clean

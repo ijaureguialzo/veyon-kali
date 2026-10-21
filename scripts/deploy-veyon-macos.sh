@@ -712,6 +712,38 @@ for app in "$BUNDLE"/Contents/MacOS/*; do
 done
 codesign --force --sign - --timestamp=none "$BUNDLE" 2>/dev/null || true
 
+# ---------------------------------------------------------------------------
+# Quarantine
+# ---------------------------------------------------------------------------
+
+# El atributo com.apple.quarantine hace que Gatekeeper mate el proceso
+# antes de que llegue a arrancar:
+#
+#     ./Veyon.app/Contents/MacOS/veyon-cli
+#     Killed: 9
+#
+# El aviso que muestra el Finder ("Apple no ha podido verificar...") viene
+# de ahi, y no de la firma en si.  Una firma ad hoc no puede pasar la
+# validacion de Gatekeeper, porque no procede de un desarrollador
+# identificado, asi que la unica forma de compilar en local sin que aparezca
+# el aviso es quitar el atributo de quarantine.
+#
+# El bundle se genera en esta maquina, de modo que no tiene por que pasar
+# por la comprobacion de descargas.  Se quita el atributo de forma
+# recursiva, porque puede estar en cualquier fichero del bundle.
+echo "── Quitar el atributo de quarantine ──"
+if xattr -dr com.apple.quarantine "$BUNDLE" 2>/dev/null; then
+    echo "    ok"
+else
+    # En algunos volumenes xattr falla si el atributo no existe, lo cual
+    # no es un problema real.
+    if xattr -r "$BUNDLE" 2>/dev/null | grep -q "com.apple.quarantine"; then
+        echo "    aviso: no se ha podido quitar el atributo de quarantine"
+    else
+        echo "    ok (no habia atributo de quarantine)"
+    fi
+fi
+
 echo
 echo "==> Bundle desplegado: $BUNDLE"
 echo "    Frameworks: $(ls "$FRAMEWORKS_DIR" 2>/dev/null | wc -l | tr -d ' ')"
