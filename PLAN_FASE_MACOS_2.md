@@ -579,3 +579,89 @@ Volcado del framebuffer del servidor VNC:
 píxeles no negros: 1112584 de 1159680 => 95.9%
 dimensiones: 1920 x 604
 ```
+
+## Icono, acceso al configurador y aviso de Gatekeeper
+
+Tres mejoras de uso local anadidas al bundle de macOS.
+
+### Icono de la aplicacion
+
+El `Info.plist` declaraba `CFBundleIconFile = Veyon.icns`, pero el
+fichero no existia.  Ahora el icono se genera durante la compilacion a
+partir del fuente vectorial del master (`master/data/veyon-master.svg`),
+con el modulo de CMake nuevo `cmake/modules/MacOSIcon.cmake`.
+
+El modulo genera las diez variantes que exige el formato `.icns` con
+`rsvg-convert` y las empaqueta con `iconutil`.  El icono se genera dentro
+del target `macos_bundle`, porque ese target borra el bundle completo al
+principio y generarlo antes se perdia.
+
+```
+Veyon.app/Contents/Resources/Veyon.icns   (200911 bytes, "ic12" type)
+```
+
+### Acceso al Veyon Configurator desde el master
+
+Se ha anadido un boton **Config** en la barra de estado del master, junto
+al boton **About**, que lanza `veyon-configurator` como proceso
+independiente.  Se lanza separado porque el configurador necesita
+privilegios de administrador para escribir la configuracion de ambito
+sistema.
+
+La busqueda del ejecutable sigue el orden: junto al master, en el
+directorio padre, y en el `PATH`.  Si no se encuentra, se avisa con un
+`QMessageBox`.
+
+```
+patches/0022-master-add-configurator-button.patch
+```
+
+### El aviso «Apple no ha podido verificar...»
+
+El aviso no viene de la firma, sino del atributo
+`com.apple.quarantine`.  Con el atributo puesto, Gatekeeper mata el
+proceso antes de que arranque:
+
+```
+$ /Applications/Veyon.app/Contents/MacOS/veyon-cli about
+Killed: 9
+```
+
+En el log del sistema:
+
+```
+syspolicyd: (Security) [com.apple.securityd:gk] rejecting due to lack of
+matching active rule
+```
+
+Una firma ad hoc no puede pasar la validacion de Gatekeeper, porque el
+sistema no puede comprobar que el binario proceda de un desarrollador
+identificado.  Sin certificado de Developer ID, la unica forma de que el
+bundle funcione en local es quitar el atributo de quarantine.
+
+Actuaciones:
+
+1. `scripts/deploy-veyon-macos.sh` quita el atributo de forma recursiva
+   al final, despues de firmar.
+2. `scripts/install-veyon-macos.sh` copia el bundle en `/Applications`,
+   quita el atributo e intenta registrar la aplicacion en las reglas de
+   Gatekeeper.  Ese paso necesita privilegios de administrador y no es
+   imprescindible.
+
+Verificado:
+
+```
+$ xattr -dr com.apple.quarantine /tmp/gktest/Veyon.app
+$ /tmp/gktest/Veyon.app/Contents/MacOS/veyon-cli about
+Veyon: 4.11.2 (Oct 21 2026)
+```
+
+Descartado, con el motivo:
+
+| Alternativa | Motivo |
+|---|---|
+| Certificado de Developer ID | Requiere una cuenta de Apple de pago. |
+| Notarizacion | Requiere Developer ID. |
+| `spctl --add` | Ya no esta soportado. |
+| Certificado personal del keychain | Sin `Extended Key Usage` de code signing. |
+| Certificado autofirmado con EKU de code signing | La clave privada necesita la contrasena del keychain, y no genera una regla que Gatekeeper reconozca. |

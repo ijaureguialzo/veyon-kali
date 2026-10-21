@@ -1272,3 +1272,132 @@ permiso de forma explicita en Ajustes del Sistema > Privacidad y seguridad >
 Grabacion de pantalla, anadiendo `io.veyon.veyon` o `/Applications/Veyon.app`.
 El instalador `scripts/install-veyon-service-macos.sh` informa de ello al
 terminar.
+
+### 8.14 Icono, acceso al configurador y aviso de Gatekeeper
+
+Tres mejoras de uso local se han anadido al bundle de macOS.
+
+#### Icono de la aplicacion
+
+El `Info.plist` declaraba `CFBundleIconFile = Veyon.icns`, pero el
+fichero no existia, de modo que la aplicacion se mostraba con el icono
+generico de macOS.
+
+El icono se genera ahora durante la compilacion, a partir del fuente
+vectorial del master (`master/data/veyon-master.svg`), con un modulo de
+CMake nuevo:
+
+```
+build/veyon-macos/cmake/modules/MacOSIcon.cmake
+```
+
+El modulo genera las diez variantes que exige el formato `.icns`
+(16, 32, 64, 128, 256 y 512 px, mas las variantes `@2x`) con
+`rsvg-convert`, y las empaqueta con `iconutil`, que viene con las Xcode
+command line tools.
+
+El icono se genera **dentro** del target `macos_bundle`, y no como un
+target aparte, porque `macos_bundle` borra el bundle completo al
+principio.  Generarlo antes se perdia.
+
+```cmake
+COMMAND ${CMAKE_COMMAND} -E make_directory ".../Contents/PlugIns"
+# El icono se genera dentro del bundle, porque este target borra
+# el bundle entero al principio.
+COMMAND ${CMAKE_COMMAND} -P "${CMAKE_BINARY_DIR}/generate-macos-icon.cmake"
+```
+
+Resultado en el bundle canonico:
+
+```
+Veyon.app/Contents/Resources/Veyon.icns   (200911 bytes, "ic12" type)
+```
+
+#### Acceso al Veyon Configurator desde el master
+
+El master no offersa ninguna via para abrir el configurador, que es el
+sitio donde se configura la autenticacion, la red y los directors de
+destino.
+
+Se ha anadido un boton **Config** en la barra de estado del master, junto
+al boton **About**, que lanza `veyon-configurator` como proceso
+independiente.  Se lanza separado, y no integrado en la misma aplicacion,
+porque el configurador necesita privilegios de administrador para escribir
+la configuracion de ambito sistema, y porque ya existe como ejecutable
+propio en el bundle.
+
+La busqueda del ejecutable sigue este orden:
+
+1. Junto al propio master, que es el caso normal dentro del bundle
+   (`Contents/MacOS/veyon-configurator`).
+2. En el directorio padre de esa ruta, para cuando el master esta
+   instalado en otro sitio.
+3. En el `PATH`, por si el configurador se instalo como ejecutable suelto.
+
+Si no se encuentra, se avisa con un `QMessageBox` en lugar de fallar en
+silencio.  Los cambios estan en el parche:
+
+```
+patches/0022-master-add-configurator-button.patch
+```
+
+#### El aviso «Apple no ha podido verificar...»
+
+Este aviso no viene de la firma, sino del atributo
+`com.apple.quarantine`.  Con el atributo puesto, Gatekeeper mata el
+proceso antes de que arranque:
+
+```
+$ /Applications/Veyon.app/Contents/MacOS/veyon-cli about
+Killed: 9
+```
+
+En el log del sistema aparece el motivo exacto:
+
+```
+syspolicyd: (Security) [com.apple.securityd:gk] rejecting due to lack of
+matching active rule
+```
+
+La causa de fondo es que una firma ad hoc no puede pasar la validacion
+de Gatekeeper: el sistema no puede comprobar que el binario proceda de
+un desarrollador identificado.  Sin certificado de Developer ID, la unica
+forma de que el bundle funcione en local es quitar el atributo de
+quarantine, que es lo que ponen `hdiutil`, los navegadores y el Finder al
+descargar un fichero.
+
+Se ha acted de dos maneras:
+
+1. El despliegue `scripts/deploy-veyon-macos.sh` quita el atributo de
+   forma recursiva al final, despues de firmar.  Es defensa en
+   profundidad, porque el bundle se genera en local y no tiene por que
+   pasar por la comprobacion de descargas.
+
+2. El instalador nuevo `scripts/install-veyon-macos.sh` copia el bundle
+   en `/Applications`, quita el atributo e intenta registrar la
+   aplicacion en las reglas de Gatekeeper.  Ese ultimo paso necesita
+   privilegios de administrador, y no es imprescindible, porque sin el
+   atributo la aplicacion se abre igualmente.
+
+Comprobado que quitar el atributo es lo que resuelve el problema:
+
+```
+$ xattr -dr com.apple.quarantine /tmp/gktest/Veyon.app
+$ /tmp/gktest/Veyon.app/Contents/MacOS/veyon-cli about
+Veyon: 4.11.2 (Oct 21 2026)
+Qt: 6.12.0 (built against 6.12.0/arm64-little_endian-lp64)
+OpenSSL: OpenSSL 4.0.3 29 Sep 2026
+```
+
+Lo que **no** se ha hecho, y por que:
+
+| Alternativa | Motivo |
+|---|---|
+| Certificado de Developer ID | Requiere una cuenta de Apple de pago. |
+| Notarizacion | Requiere Developer ID. |
+| `spctl --add` | El subcomando ya no esta soportado: «This operation is no longer supported». |
+| Certificado personal del keychain | No tiene el `Extended Key Usage` de code signing, asi que `codesign` lo rechaza. |
+| Certificado autofirmado con EKU de code signing | Funciona, pero la clave privada necesita la contrasena del keychain para poder usarse, y el certificado acaba sin una regla que Gatekeeper reconozca. |
+
+Para una distribucion publica haria falta el certificado de Developer ID
+y la notarizacion, que es un camino distinto del cubierto aqui.
