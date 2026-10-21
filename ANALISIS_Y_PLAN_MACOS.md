@@ -696,8 +696,9 @@ Lo que sigue describe **lo que ya está hecho y verificado**, no lo planificado.
 | `veyon-cli` / `veyon-master` / `veyon-configurator` | ✅ Funcional | ventana "Veyon Logon" abierta en macOS |
 | Plugin de plataforma macOS | ✅ Funcional | `MacOSPlatformPlugin` cargado, 15 plugins |
 | Bundle `Veyon.app` | ✅ Funcional | se ejecuta **sin `DYLD_LIBRARY_PATH`** |
-| Bundle autosuficiente | ✅ Funcional | **0 referencias** a Homebrew en runtime y en `otool -L` |
-| Disco `Veyon-4.11.2.dmg` | ✅ Funcional | contiene bundle + symlink a `/Applications` |
+| Bundle autosuficiente | ✅ Funcional | **0 referencias** a Homebrew en runtime y en `otool -L`, **0** runpaths absolutos |
+| Disco `Veyon-4.11.2.dmg` | ✅ Funcional | contiene bundle + symlink a `/Applications`, empaquetado con `diskutil` |
+| Servicio launchd de usuario | ✅ Funcional | `LaunchAgent` en `gui/<uid>` con el token del `ServiceDataManager` |
 | Build Kali `arm64` | ✅ Intacto | `veyon_4.11.2.0_arm64.deb` generado y validado |
 
 ### 8.2 Estructura añadida al repositorio
@@ -793,11 +794,11 @@ dependencias innecesarias.
 | Core | ✅ logging unificado, prevención de sleep (IOKit), reinicio, privilegios (AppleScript), `NSRunningApplication` |
 | Filesystem | ✅ `Application Support`, ownership/perms POSIX, detección de bloqueos (`libproc`) |
 | Input | ⚠️ `CGEventTap` para atajos; requiere permiso **Accessibility** |
-| Network | ⚠️ keepalive TCP e interfaz por defecto; ping/firewall/velocidad en *stub* |
-| Service | ⚠️ plist y `launchctl`; instalación aún no validada en un sistema real |
-| Session | ⚠️ hostname, uptime, variables de entorno; CFPreferences en *stub* |
-| User | ✅ grupos y autenticación Open Directory (`dscl -authonly`); logon/logoff gráfico no soportado |
-| Captura de pantalla | ❌ sin backend nativo; `external-vnc-server` es la vía inicial |
+| Network | ✅ keepalive TCP, interfaz por defecto, ping ICMP sin privilegios, firewall por aplicación, velocidad de red (IOKit / `SIOCGIFMEDIA` / `SCDynamicStore`) |
+| Service | ✅ plist y `launchctl` (`bootstrap`/`bootout`); el LaunchDaemon real aún no se ha validado con *root* |
+| Session | ✅ hostname, uptime, variables de entorno y CFPreferences |
+| User | ✅ grupos y autenticación Open Directory (`dscl -authonly`); logon/logoff gráfico vía `System Events`, requiere **Accessibility** |
+| Captura de pantalla | ✅ backend nativo ScreenCaptureKit con captura multimonitor; requiere un display activo |
 
 ### 8.7 Bundle autosuficiente
 
@@ -928,20 +929,40 @@ $ printf '\x00' | nc -w 3 127.0.0.1 11100 | head -c 12
 RFB 003.008
 ```
 
-#### Limitación: la captura de todos los monitores
+#### Captura de todos los monitores
 
-`SCContentFilter` captura **un** `SCDisplay` por *stream*. La opción
-"capturar todos los monitores" usa hoy el primer `SCDisplay` disponible,
-mientras que las dimensiones se calculan como la suma de las anchuras y la
-altura máxima de todos ellos. La imagen resultante no corresponde con el
-filtro aplicado.
+`SCContentFilter` captura **un** `SCDisplay` por *stream*, así que la
+captura de todos los monitores se ha resuelto con la **opción A**: un
+`SCStream` independiente por cada `SCDisplay`, con un *frame* por monitor, y
+una composición final en un escritorio virtual.
 
-Las opciones pendientes son:
+- `ScreenCaptureKitCapturer` mantiene un `QVector<DisplayState>`, con el
+  `SCStream`, el `SCContentFilter`, la `SCStreamConfiguration` y el *output*
+  de cada display, junto a su posición y su tamaño.
+- `ScreenCaptureKitStreamOutput` escribe en `m_displayFrames[m_displayIndex]`,
+  de modo que cada display tiene su propio *framebuffer*.
+- La geometría se calcula a partir de `SCDisplay.frame`, de forma que el
+  *bounding box* conserva la disposición relativa de los monitores,
+  incluidos los *offsets* negativos.
+- Se aplica un **único factor de escala** común, para que ningún display
+  cambie de proporción ni use una escala distinta.
+- Las zonas del *bounding box* no cubiertas por ningún monitor quedan en
+  negro.
+- Con un único monitor se devuelve directamente su frame capturado, sin
+  composición adicional.
 
-1. Crear un `SCStream` por monitor y componer los *frames* en un framebuffer
-   virtual (con el *cursor* de cada uno), o bien
-2. Cambiar la semántica de la opción a "monitor principal" y Renombrar el
-   ajuste en consecuencia.
+La opción B se descartó: `initWithDesktopIndependentWindow:nil` exige una
+ventana real y no resuelve la composición multimonitor.
+
+El ajuste del *widget* de configuración dice ahora:
+
+```text
+Combine all monitors into a single desktop
+```
+
+Pendiente de validación: la recepción real de frames, la activación de
+`m_newFrame` y la composición de varios monitores en un equipo con la
+pantalla encendida.
 
 ### 8.9 Limitaciones conocidas
 
@@ -949,24 +970,72 @@ Las opciones pendientes son:
 2. **Sin firma ni notarización**: el bundle se firma *ad hoc*, lo que permite
    ejecutarlo localmente pero no distriburlo. Gatekeeper bloqueará la
    instalación en otros equipos hasta que se firme con Developer ID y se
-   notarice.
+   notarice. *Descartado por decisión explícita.*
 3. **ScreenCaptureKit requiere un display activo**: en máquinas *headless* o
    con las pantallas en reposo el backend nativo no puede arrancar y se usa
    el *fallback* *headless*.
-4. **"Todos los monitores" no está implementado**: el filtro y las
-   dimensiones no son coherentes entre sí (ver 8.8).
-5. **`hdiutil` está obsoleto**: `scripts/package-veyon-macos.sh` genera
-   avisos de deprecación; el resultado es válido, pero debería migrarse a
-   `diskutil`.
+4. **`hdiutil` se usa sólo para crear y comprimir**: `diskutil` no tiene
+   equivalente para `hdiutil create` ni para `hdiutil convert`. La
+   manipulación del disco (adjuntar, montar, desmontar, expulsar) sí se hace
+   con `diskutil`, y `hdiutil` sólo emite avisos de deprecación en esas dos
+   operaciones.
+5. **La captura real no se ha validado**: el equipo de pruebas tiene los dos
+   monitores *online* pero *asleep*, así que `SCShareableContent` no expone
+   ningún `SCDisplay` y no se puede recibir un frame. El plugin compila,
+   carga, falla con un mensaje explícito y el *fallback* responde.
+6. **La velocidad de red no se ha validado**: en Apple Silicon las interfaces
+   disponibles son virtuales y no exponen la propiedad `speed` del registro
+   del IOKit. El código busca esa propiedad en `IOEthernetInterface` y en
+   `IOSkywalkLegacyEthernetInterface`, y tiene como alternativas
+   `SIOCGIFMEDIA` y `SCDynamicStore`.
+7. **El logon y el logoff usan `System Events`**: no se ha encontrado una API
+   pública de `loginwindow` para el Fast User Switching ni para el cierre de
+   sesión. `System Events` requiere el permiso de accesibilidad y el atajo
+   exacto debe validarse en una sesión Aqua real. Además, `runCommand()`
+   decide el éxito por la salida no vacía, y `osascript` no suele producir
+   salida al enviar un atajo, así que conviene basarse en el *exit code*.
+8. **El LaunchDaemon real no se ha validado**: requiere privilegios *root*.
+   El flujo completo de `LaunchAgent` en `gui/<uid>` sí está validado, con el
+   token del `ServiceDataManager` llegando al proceso del servidor.
 
 ### 8.10 Siguientes pasos pendientes
 
-1. Firmar y notarizar el bundle (`codesign`, `notarytool`).
-2. Resolver la captura multi-monitor de ScreenCaptureKit (ver 8.8).
-3. Completar los *stubs*: ping, firewall, velocidad de red, CFPreferences,
-   logon/logoff.
-4. Validar `veyon-service` como servicio launchd en un sistema real.
-5. Crear el rol de Ansible `roles/instalar-veyon-macos` para el despliegue.
-6. Migrar `scripts/package-veyon-macos.sh` de `hdiutil` a `diskutil`.
-7. Validar la captura real en un equipo con la pantalla encendida y el
-   permiso de Screen Recording concedido a `Veyon.app`.
+1. Validar la captura real en un equipo con la pantalla encendida y el
+   permiso de Screen Recording concedido a `io.veyon.veyon`, comprobando la
+   recepción de frames, la composición multimonitor, el cursor, los FPS y el
+   redimensionado.
+2. Validar el LaunchDaemon real en `/Library/LaunchDaemons` y el dominio
+   `system/io.veyon.veyon-service` usando *root*.
+3. Ajustar `performLogon()` y `logoff()` para basarse en el *exit code* de
+   `osascript` y validar los atajos de Fast User Switching y Cmd+Shift+Q en
+   una sesión Aqua con accesibilidad.
+4. Verificar la velocidad de red sobre una interfaz física.
+5. Firmar y notarizar el bundle (`codesign`, `notarytool`). *Descartado por
+   decisión explícita.*
+6. Crear el rol de Ansible `roles/instalar-veyon-macos` para el despliegue.
+   *Descartado por decisión explícita.*
+
+### 8.11 Estado de las tareas de la fase 2
+
+Las tareas de la fase 2 se detallan en `PLAN_FASE_MACOS_2.md`. Resumen:
+
+| Tarea | Estado |
+|---|---|
+| 1 — Reescritura del arranque del servicio | Descartada |
+| 2 — `SERVICE_PATH` del instalador | Hecha |
+| 3 — Token del `ServiceDataManager` al LaunchAgent | Hecha |
+| 4 — Home real del usuario (`getpwnam`) | Hecha |
+| 8 — Captura multimonitor con ScreenCaptureKit (opción A) | Hecha |
+| 9 — Limpieza de la API del servicio launchd | Hecha |
+| 10 — Empaquetado DMG con `diskutil` | Hecha |
+| 11 — Funciones nativas de macOS | Hecha |
+| 12 — Versionar y actualizar el plan | Hecha |
+
+El bundle final valida con:
+
+```text
+rutas absolutas en el bundle:   0
+dependencias externas (otool -L): 0
+rutas externas (DYLD_PRINT_LIBRARIES): 0
+codesign --verify --deep: OK
+```
