@@ -23,6 +23,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 BUNDLE="${VEYON_MACOS_BUNDLE:-$PROJECT_DIR/build/veyon-macos/build/Veyon.app}"
+INSTALL_DIR="/Applications"
+INSTALLED_BUNDLE="$INSTALL_DIR/Veyon.app"
 DAEMON_DIR="/Library/LaunchDaemons"
 DAEMON_PLIST="$DAEMON_DIR/io.veyon.veyon-service.plist"
 DAEMON_LABEL="io.veyon.veyon-service"
@@ -48,17 +50,22 @@ if [ "$MODE" = "uninstall" ]; then
     rm -f "$DAEMON_PLIST"
     echo "    daemon eliminado"
 
-    # Detener y eliminar los launch agents de los usuarios conocidos.
-    for plist in /Users/*/Library/LaunchAgents/io.veyon.veyon-server.plist; do
+    # Detener y eliminar los launch agents de todos los usuarios.  La lista
+    # de usuarios se obtiene de Open Directory, porque el home de una cuenta
+    # no tiene por qué estar en /Users.
+    while read -r user; do
+        [ -n "$user" ] || continue
+        home="$(dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+        [ -n "$home" ] || continue
+        plist="$home/Library/LaunchAgents/io.veyon.veyon-server.plist"
         [ -e "$plist" ] || continue
-        user="$(basename "$(dirname "$(dirname "$plist")")")"
         uid="$(id -u "$user" 2>/dev/null || echo "")"
         if [ -n "$uid" ]; then
             launchctl bootout "gui/$uid/io.veyon.veyon-server" 2>/dev/null || true
         fi
         rm -f "$plist"
         echo "    launch agent de $user eliminado"
-    done
+    done < <(dscl . -list /Users 2>/dev/null | awk '!/^_/ && NF')
 
     echo "==> OK: servicio eliminado"
     exit 0
@@ -80,11 +87,20 @@ if [ ! -x "$SERVER_PATH" ] || [ ! -x "$SERVICE_PATH" ]; then
 fi
 
 # 2. Instalar el bundle en /Applications ───────────────────────────────────
-if [ ! -d "/Applications/Veyon.app" ] || [ "$BUNDLE" != "/Applications/Veyon.app" ]; then
-    echo "── instalar el bundle en /Applications ──"
-    rm -rf "/Applications/Veyon.app"
-    cp -R "$BUNDLE" "/Applications/Veyon.app"
-    echo "    instalado en /Applications/Veyon.app"
+if [ ! -d "$INSTALLED_BUNDLE" ] || [ "$BUNDLE" != "$INSTALLED_BUNDLE" ]; then
+    echo "── instalar el bundle en $INSTALL_DIR ──"
+    rm -rf "$INSTALLED_BUNDLE"
+    cp -R "$BUNDLE" "$INSTALLED_BUNDLE"
+    echo "    instalado en $INSTALLED_BUNDLE"
+fi
+
+# Las rutas del LaunchDaemon tienen que apuntar a la instalación final, no
+# al directorio de compilación, que se puede borrar en cualquier momento.
+INSTALLED_SERVICE_PATH="$INSTALLED_BUNDLE/Contents/MacOS/veyon-service"
+
+if [ ! -x "$INSTALLED_SERVICE_PATH" ]; then
+    echo "ERROR: no se encuentra $INSTALLED_SERVICE_PATH tras la instalación" >&2
+    exit 1
 fi
 
 # 3. Escribir el LaunchDaemon ──────────────────────────────────────────────
@@ -100,7 +116,7 @@ cat > "$DAEMON_PLIST" <<EOF
 	<string>$DAEMON_LABEL</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>$SERVICE_PATH</string>
+		<string>$INSTALLED_SERVICE_PATH</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
