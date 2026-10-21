@@ -909,10 +909,10 @@ index 000000000..a601dde88
 +}
 diff --git a/plugins/platform/macos/MacOSUserFunctions.cpp b/plugins/platform/macos/MacOSUserFunctions.cpp
 new file mode 100644
-index 000000000..f6b576d48
+index 000000000..ef9632ae6
 --- /dev/null
 +++ b/plugins/platform/macos/MacOSUserFunctions.cpp
-@@ -0,0 +1,277 @@
+@@ -0,0 +1,296 @@
 +/*
 + * MacOSUserFunctions.cpp - implementation of MacOSUserFunctions class
 + *
@@ -968,6 +968,25 @@ index 000000000..f6b576d48
 +	}
 +
 +	return QString::fromUtf8( process.readAllStandardOutput() ).trimmed();
++}
++
++// Run a command and return whether it terminated successfully.
++//
++// Some commands, like the keyboard shortcuts that are sent through
++// "osascript", do not produce any output at all.  For them the exit code
++// is the only reliable indicator of success, so the standard output
++// cannot be used to decide whether the command worked.
++bool runCommandSuccessfully( const QString& program, const QStringList& arguments )
++{
++	QProcess process;
++	process.start( program, arguments );
++	if ( process.waitForStarted( 5000 ) == false )
++	{
++		return false;
++	}
++	process.waitForFinished( 5000 );
++
++	return process.exitCode() == 0;
 +}
 +
 +} // namespace
@@ -1142,11 +1161,11 @@ index 000000000..f6b576d48
 +	// The user that is going to be logged on has to be selected in the
 +	// switcher afterwards, so the logon is only reported as successful
 +	// when the switcher could be opened.
-+	const auto switcherOpened = runCommand( QStringLiteral( "/usr/bin/osascript" ),
-+											{ QStringLiteral( "-e" ),
-+											  QStringLiteral( "tell application \"System Events\" to key code 12 using {command down, control down}" ) } );
++	const auto switcherOpened = runCommandSuccessfully( QStringLiteral( "/usr/bin/osascript" ),
++													   { QStringLiteral( "-e" ),
++														 QStringLiteral( "tell application \"System Events\" to key code 126 using {command down, control down}" ) } );
 +
-+	if( switcherOpened.isEmpty() == false )
++	if( switcherOpened )
 +	{
 +		return true;
 +	}
@@ -1164,9 +1183,9 @@ index 000000000..f6b576d48
 +	// The logoff of the current session is triggered by the keyboard
 +	// shortcut of the system, which asks the window server to close the
 +	// session.  The confirmation dialog is shown by the system itself.
-+	runCommand( QStringLiteral( "/usr/bin/osascript" ),
-+				{ QStringLiteral( "-e" ),
-+				  QStringLiteral( "tell application \"System Events\" to key code 12 using {command down, shift down}" ) } );
++	runCommandSuccessfully( QStringLiteral( "/usr/bin/osascript" ),
++							{ QStringLiteral( "-e" ),
++							  QStringLiteral( "tell application \"System Events\" to key code 12 using {command down, shift down}" ) } );
 +}
 +
 +

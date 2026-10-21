@@ -1256,10 +1256,10 @@ index 000000000..93af4cec3
 +};
 diff --git a/plugins/platform/macos/MacOSServerProcess.cpp b/plugins/platform/macos/MacOSServerProcess.cpp
 new file mode 100644
-index 000000000..a3224afb9
+index 000000000..ae7b42015
 --- /dev/null
 +++ b/plugins/platform/macos/MacOSServerProcess.cpp
-@@ -0,0 +1,202 @@
+@@ -0,0 +1,200 @@
 +/*
 + * MacOSServerProcess.cpp - implementation of MacOSServerProcess class
 + *
@@ -1295,8 +1295,7 @@ index 000000000..a3224afb9
 +
 +
 +
-+MacOSServerProcess::MacOSServerProcess( const QProcessEnvironment& processEnvironment,
-+										const QString& userName,
++MacOSServerProcess::MacOSServerProcess( const QString& userName,
 +										const QString& userHomeDirectory,
 +										int userId,
 +										const QString& serverPath,
@@ -1307,11 +1306,10 @@ index 000000000..a3224afb9
 +	m_userId( userId ),
 +	m_serverPath( serverPath )
 +{
-+	// The process environment is only used as a template: the actual
-+	// environment of the server is taken from the user's session by
-+	// launchd, so that the server runs with the same environment as the
-+	// applications of the user.
-+	Q_UNUSED( processEnvironment )
++	// The environment of the server is not inherited from the service.
++	// launchd provides the environment of the session of the user and
++	// the token of the service data manager is written into the launch
++	// agent, so that the server can exchange data with the service.
 +}
 +
 +
@@ -1464,10 +1462,10 @@ index 000000000..a3224afb9
 +}
 diff --git a/plugins/platform/macos/MacOSServerProcess.h b/plugins/platform/macos/MacOSServerProcess.h
 new file mode 100644
-index 000000000..5cff1f75f
+index 000000000..9ec93f475
 --- /dev/null
 +++ b/plugins/platform/macos/MacOSServerProcess.h
-@@ -0,0 +1,95 @@
+@@ -0,0 +1,93 @@
 +/*
 + * MacOSServerProcess.h - declaration of MacOSServerProcess class
 + *
@@ -1495,7 +1493,6 @@ index 000000000..5cff1f75f
 +#pragma once
 +
 +#include <QProcess>
-+#include <QProcessEnvironment>
 +#include <QString>
 +
 +// clazy:excludeall=copyable-polymorphic
@@ -1514,8 +1511,7 @@ index 000000000..5cff1f75f
 +{
 +	Q_OBJECT
 +public:
-+	MacOSServerProcess( const QProcessEnvironment& processEnvironment,
-+						const QString& userName,
++	MacOSServerProcess( const QString& userName,
 +						const QString& userHomeDirectory,
 +						int userId,
 +						const QString& serverPath,
@@ -1565,10 +1561,10 @@ index 000000000..5cff1f75f
 +};
 diff --git a/plugins/platform/macos/MacOSServiceCore.cpp b/plugins/platform/macos/MacOSServiceCore.cpp
 new file mode 100644
-index 000000000..e2a052740
+index 000000000..cbeb03736
 --- /dev/null
 +++ b/plugins/platform/macos/MacOSServiceCore.cpp
-@@ -0,0 +1,376 @@
+@@ -0,0 +1,372 @@
 +/*
 + * MacOSServiceCore.cpp - implementation of MacOSServiceCore class
 + *
@@ -1795,11 +1791,7 @@ index 000000000..e2a052740
 +	// that it can exchange data with the service.  It is written into the
 +	// launch agent, because launchd does not inherit the environment of
 +	// the service.
-+	QProcessEnvironment serverEnvironment = QProcessEnvironment::systemEnvironment();
-+	serverEnvironment.insert( QString::fromLatin1( ServiceDataManager::serviceDataTokenEnvironmentVariable() ),
-+							  QString::fromUtf8( m_dataManager.token().toByteArray() ) );
-+
-+	auto serverProcess = new MacOSServerProcess( serverEnvironment, userName,
++	auto serverProcess = new MacOSServerProcess( userName,
 +												  userHomeDirectory( userName ), uid, serverPath, this );
 +	serverProcess->start();
 +
