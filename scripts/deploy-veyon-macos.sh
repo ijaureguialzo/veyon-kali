@@ -54,6 +54,10 @@ echo "    macdeployqt: $MACDEPLOYQT"
 
 # macdeployqt espera un ejecutable o un bundle.  Se le pasa el bundle
 # completo para que también copie los plugins de QCA.
+#
+# Se conserva el strip de macdeployqt: el aviso "Broken filename passed to
+# function" no venia de aqui, sino del relleno con bytes nulos de la ruta
+# de plugins de QCA, que se ha corregido mas abajo.
 "$MACDEPLOYQT" "$BUNDLE" -always-overwrite
 
 # ---------------------------------------------------------------------------
@@ -584,7 +588,7 @@ for match, text in candidates:
     replacement = "/nonexistent-veyon-qca-plugins"
     if len(replacement) > len(text):
         replacement = replacement[:len(text)]
-    padded = replacement + "\x00" * (len(text) - len(replacement))
+    padded = replacement + " " * (len(text) - len(replacement))
     data = data[:match.start()] + padded.encode("utf-16-le") + data[match.end():]
     print("    %s -> %s" % (text, replacement))
 
