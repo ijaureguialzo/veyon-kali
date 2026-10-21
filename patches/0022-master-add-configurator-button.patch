@@ -1,0 +1,160 @@
+diff --git a/master/src/MainWindow.cpp b/master/src/MainWindow.cpp
+index 6a71be85e..b65b371dd 100644
+--- a/master/src/MainWindow.cpp
++++ b/master/src/MainWindow.cpp
+@@ -23,13 +23,17 @@
+  */
+ 
+ #include <QCloseEvent>
++#include <QCoreApplication>
+ #include <QFileDialog>
++#include <QFileInfo>
+ #include <QJsonDocument>
+ #include <QKeyEvent>
+ #include <QHostAddress>
+ #include <QMenu>
+ #include <QMessageBox>
++#include <QProcess>
+ #include <QSplitter>
++#include <QStandardPaths>
+ 
+ #include "AboutDialog.h"
+ #include "AccessControlProvider.h"
+@@ -79,6 +83,7 @@ MainWindow::MainWindow( VeyonMaster &masterCore, QWidget* parent ) :
+ 	ui->statusBar->addWidget( ui->useCustomComputerPositionsButton );
+ 	ui->statusBar->addWidget( ui->alignComputersButton );
+ 	ui->statusBar->addWidget( ui->spacerLabel4 );
++	ui->statusBar->addWidget( ui->configurationButton );
+ 	ui->statusBar->addWidget( ui->aboutButton );
+ 
+ 	// create all views
+@@ -222,6 +227,12 @@ MainWindow::MainWindow( VeyonMaster &masterCore, QWidget* parent ) :
+ 				 m_master.userConfig().setAutoAdjustMonitoringIconSize( enabled );
+ 			 } );
+ 
++	// El boton de configuracion abre el Veyon Configurator, que puede
++	// necesitar privilegios de administrador y por eso se ejecuta como
++	// proceso separado.
++	connect( ui->configurationButton, &QToolButton::clicked,
++			 this, &MainWindow::openConfigurator );
++
+ 	int size = ComputerMonitoringWidget::DefaultComputerScreenSize;
+ 	if( m_master.userConfig().monitoringScreenSize() >= ComputerMonitoringWidget::MinimumComputerScreenSize )
+ 	{
+@@ -291,6 +302,73 @@ MainWindow::~MainWindow()
+ }
+ 
+ 
++void MainWindow::openConfigurator()
++{
++	// El configurador se lanza como proceso independiente, de modo que
++	// pueda pedir privilegios de administrador cuando hace falta.
++	//
++	// Dentro de un bundle de macOS el ejecutable esta en Contents/MacOS,
++	// junto al master, y fuera de el esta en el directorio del binario.
++	// Se buscan las dos ubicaciones para que el boton funcione tanto
++	// desde el bundle como desde el arbol de compilacion.
++	const auto appDir = QCoreApplication::applicationDirPath();
++
++	QStringList candidates;
++	candidates << appDir + QStringLiteral("/veyon-configurator");
++
++	// En una instalacion en /Applications el ejecutable puede estar en
++	// /Applications/Veyon.app/Contents/MacOS, y el bundle se localiza a
++	// partir de la ruta del propio master.
++	const auto bundleDir = QFileInfo( appDir ).absolutePath();
++	candidates << bundleDir + QStringLiteral("/veyon-configurator");
++
++	QString configurator;
++	for( const auto& candidate : candidates )
++	{
++		if( QFileInfo::exists( candidate ) )
++		{
++			configurator = candidate;
++			break;
++		}
++	}
++
++	if( configurator.isEmpty() )
++	{
++		// Si no se encuentra en el bundle, se busca en el PATH, por si el
++		// configurador se instalo como un ejecutable suelto.
++		configurator = QStandardPaths::findExecutable( QStringLiteral("veyon-configurator") );
++	}
++
++	if( configurator.isEmpty() )
++	{
++		QMessageBox::warning( this,
++							  tr( "Veyon Configurator not found" ),
++							  tr( "The Veyon Configurator executable could not be found. "
++								  "Looked in %1." ).arg( candidates.join( QStringLiteral( ", " ) ) ) );
++		return;
++	}
++
++	auto* process = new QProcess( this );
++	process->setProgram( configurator );
++	process->setProcessChannelMode( QProcess::ForwardedChannels );
++
++	connect( process, &QProcess::errorOccurred, this,
++			 [this, configurator]( QProcess::ProcessError error )
++	{
++		if( error == QProcess::FailedToStart )
++		{
++			QMessageBox::warning( this,
++								  tr( "Veyon Configurator not found" ),
++								  tr( "The Veyon Configurator could not be started: %1" ).arg( configurator ) );
++		}
++	} );
++
++	connect( process, &QProcess::finished, process, &QProcess::deleteLater );
++
++	process->start();
++}
++
++
+ 
+ bool MainWindow::initAuthentication()
+ {
+diff --git a/master/src/MainWindow.h b/master/src/MainWindow.h
+index b6fde9626..20e6edce8 100644
+--- a/master/src/MainWindow.h
++++ b/master/src/MainWindow.h
+@@ -65,6 +65,7 @@ protected:
+ 
+ private Q_SLOTS:
+ 	void showAboutDialog();
++	void openConfigurator();
+ 
+ private:
+ 	static int buttonId(const Feature& feature) // clazy:exclude=qt6-qhash-signature
+diff --git a/master/src/MainWindow.ui b/master/src/MainWindow.ui
+index 6b92b6f84..e8c098622 100644
+--- a/master/src/MainWindow.ui
++++ b/master/src/MainWindow.ui
+@@ -120,6 +120,26 @@
+          <normaloff>:/core/help-about.png</normaloff>:/core/help-about.png</iconset>
+        </property>
+       </widget>
++      <widget class="QToolButton" name="configurationButton">
++       <property name="geometry">
++        <rect>
++         <x>1180</x>
++         <y>570</y>
++         <width>80</width>
++         <height>37</height>
++        </rect>
++       </property>
++       <property name="toolTip">
++        <string>Open the Veyon Configurator</string>
++       </property>
++       <property name="text">
++        <string>Config</string>
++       </property>
++       <property name="icon">
++        <iconset resource="../../core/resources/core.qrc">
++         <normaloff>:/core/dialog-ok-apply.png</normaloff>:/core/dialog-ok-apply.png</iconset>
++       </property>
++      </widget>
+       <widget class="QLabel" name="spacerLabel3">
+        <property name="geometry">
+         <rect>
