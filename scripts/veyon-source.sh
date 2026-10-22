@@ -27,6 +27,12 @@
 
 set -euo pipefail
 
+# Ningún comando de este script debe abrir un pager: el script se ejecuta
+# desde el Makefile, donde la salida va al terminal, y un "less" bloquearía
+# la compilación esperando a que se pulse 'q'.
+export GIT_PAGER=cat
+export PAGER=cat
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -152,8 +158,8 @@ update_source() {
     git -C "$SRC_DIR" submodule update --init --recursive
 
     echo "── estado ──"
-    git -C "$SRC_DIR" log -1 --format='    %h %ad %s' --date=short
-    git -C "$SRC_DIR" status -sb | head -1 | sed 's/^/    /'
+    git --no-pager -C "$SRC_DIR" log -1 --format='    %h %ad %s' --date=short
+    git --no-pager -C "$SRC_DIR" status -sb | head -1 | sed 's/^/    /'
 }
 
 # ── CLI ────────────────────────────────────────────────────────────────────
