@@ -122,6 +122,10 @@ git submodule update --init --recursive >/dev/null 2>&1 || true
 git submodule status | sed 's/^/     /'
 
 # 3. Aplicar parches ────────────────────────────────────────────────────────
+# El checkout upstream se actualiza antes de compilar, así que su contexto
+# puede haber cambiado desde que se generó un parche.  Cuando el parche ya no
+# aplica limpiamente se intenta una fusión a tres vías, que resuelve los
+# cambios de contexto siempre que no se contradigan.
 echo "── aplicar parches ──"
 for patch in "$PATCH_DIR"/*.patch; do
     [ -e "$patch" ] || continue
@@ -132,8 +136,18 @@ for patch in "$PATCH_DIR"/*.patch; do
     elif git apply --reverse --check "$patch" >/dev/null 2>&1; then
         echo "     ya aplicado  $name"
     else
-        echo "     ERROR al aplicar $name"
-        git apply "$patch" || exit 1
+        merge_out="$(LC_ALL=C git apply --3way --check "$patch" 2>&1 || true)"
+        if printf '%s' "$merge_out" | grep -qi "conflict"; then
+            echo "     ERROR: $name no aplica (el upstream cambió el contexto)"
+            echo "            revisa el parche o quítalo si el upstream ya lo incluye"
+            exit 1
+        fi
+        if LC_ALL=C git apply --3way "$patch" >/dev/null 2>&1; then
+            echo "     fusionado  $name"
+        else
+            echo "     ERROR al aplicar $name"
+            exit 1
+        fi
     fi
 done
 
