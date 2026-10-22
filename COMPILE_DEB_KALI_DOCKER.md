@@ -30,10 +30,10 @@ docker pull --platform linux/amd64 kalilinux/kali-rolling
 
 ```bash
 cd ~/proyectos/veyon-kali
-make arm64          # ~3-5 min (nativo)     -> out/veyon_<version>_arm64.deb
-make amd64          # ~1-2 min (emulado)     -> out/veyon_<version>_amd64.deb
+make arm64          # ~3-5 min (nativo)     -> package/veyon_<version>_arm64.deb
+make amd64          # ~15-30 min (emulado)   -> package/veyon_<version>_amd64.deb
 make                # los dos en secuencia
-make clean          # borra ./out y contenedores colgantes
+make clean          # borra los .deb generados y el workspace de macOS
 ```
 
 `make arm64` y `make amd64` actualizan antes el checkout de Veyon: el
@@ -44,11 +44,11 @@ compila es siempre la última del upstream.
 
 | Archivo | Arquitectura | Size | veyon-cli about |
 |---|---|---|---|
-| `out/veyon_4.11.2.6_arm64.deb` | `arm64` | 1.6 MB | `…/built against 5.15.19/arm64-little_endian-lp64` |
-| `out/veyon_4.11.2.6_amd64.deb` | `amd64` | 1.7 MB | `…/built against 5.15.19/x86_64-little_endian-lp64` |
+| `package/veyon_4.11.4.14_arm64.deb` | `arm64` | 1.6 MB | `…/built against 5.15.19/arm64-little_endian-lp64` |
+| `package/veyon_4.11.4.14_amd64.deb` | `amd64` | 1.8 MB | `…/built against 5.15.19/x86_64-little_endian-lp64` |
 
 Ambos se instalan limpiamente con `dpkg -i` tras `apt-get install -f`; `veyon-cli`
-informa `Veyon 4.11.2 / Qt 5.15.19 / OpenSSL 3.6.3`.
+informa `Veyon 4.11.4 / Qt 5.15.19 / OpenSSL 3.6.5`.
 
 ## Decisiones clave de configuración
 
@@ -110,5 +110,5 @@ informa `Veyon 4.11.2 / Qt 5.15.19 / OpenSSL 3.6.3`.
 - `Makefile` — orquestación `docker run`.
 - `build-veyon.sh` — la lógica que corrobora dentro del contenedor
   (apt → copiar a `/work` → parche → CMake → Ninja → CPack → verificar).
-- `out/veyon_4.11.2.6_arm64.deb`
-- `out/veyon_4.11.2.6_amd64.deb`
+- `package/veyon_4.11.4.14_arm64.deb`
+- `package/veyon_4.11.4.14_amd64.deb`

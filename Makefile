@@ -1,19 +1,17 @@
 #!make
 
-# Parámetros configurables
-SSH_USER  ?= ciber
-SSH_KEY   ?= $(HOME)/.ssh/id_rsa.pub
-INVENTORY ?= inventory/hosts.ini
-
 # Makefile — Compila Veyon .deb para Kali Linux vía Docker
 #                 y Veyon para macOS de forma nativa
 #
 # Uso:
-#    make            # arm64 nativo + amd64 emulado
-#    make arm64      # solo arm64 (~5 min en Apple Silicon)
-#    make amd64      # solo amd64 (emulado, ~15-30 min)
-#    make macos      # build nativo para macOS (arm64/x86_64)
-#    make clean      # contenedores intermedios + ./out
+#    make               # arm64 nativo + amd64 emulado
+#    make arm64         # solo arm64 (~5 min en Apple Silicon)
+#    make amd64         # solo amd64 (emulado, ~15-30 min)
+#    make macos         # build nativo para macOS (arm64/x86_64)
+#    make macos-package # reempaqueta el bundle existente en un DMG
+#    make macos-install # instala el bundle en /Applications
+#    make clean         # borra los .deb generados y el workspace de macOS
+#    make help          # lista los objetivos
 #
 # Requisitos:
 #    * Docker daemon activo
@@ -21,7 +19,6 @@ INVENTORY ?= inventory/hosts.ini
 #        docker pull --platform linux/arm64 kalilinux/kali-rolling
 #        docker pull --platform linux/amd64 kalilinux/kali-rolling
 #    * (opcional en ARM) qemu/binfmt registrado en Docker Desktop para amd64
-#    * La fuente (checkout + submodules) la deja lista `make download-src`
 #
 # Diseño:
 #     * Todos los procesos usan UNA SOLA copia del repositorio Git de Veyon
@@ -32,22 +29,16 @@ INVENTORY ?= inventory/hosts.ini
 #       del anfitrión.
 #     * build-veyon.sh copia la fuente a /work (escritura) y aplica ahí el
 #       parche GCC-15 de -Werror (3 falsos positivos: format-overflow /
-#       format-truncation / maybe-uninitialized), conservando -Werror para
-#       el resto de objetivos.
-#     * El .deb final se copia a ./out/.
+#       format-truncation / maybe-uninitialized), conservando -Werror para el
+#       resto de objetivos.
+#     * El .deb final se copia a ./package/.
 #
 # Para macOS:
 #     * build-veyon-macos.sh trabaja sobre una copia editable en
 #       build/veyon-macos y aplica los parches de patches/, de forma que el
 #       checkout upstream en build/veyon queda intacto.
 #     * El resultado es un stage ejecutable en build/veyon-macos/build/stage.
-#
-# Fuente única de Veyon:
-#     * download-src clona/actualiza el checkout único y sus submodules.
-#     * arm64/amd64 dependen de download-src: el contenedor monta el checkout
-#       en read-only, así que la actualización se hace en el anfitrión.
-#     * macOS no depende de download-src porque build-veyon-macos.sh actualiza
-#       el mismo checkout por su cuenta (mismo helper, misma copia).
+#     * "make clean" borra ese workspace; el checkout upstream no se toca.
 
 SHELL    := /bin/bash
 ROOT_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
@@ -62,37 +53,18 @@ PREFIX   ?= /opt/homebrew
 # sí, apt-get update aborta; por eso se fija uno y se van probando.
 KALI_MIRRORS ?= http://mirror.raiolanetworks.com/kali/ http://mirror.es.cdn-perfprod.com/kali/ http://ftp.halifax.rwth-aachen.de/kali/
 
-.PHONY: help _header setup-ssh apply all arm64 amd64 macos macos-package \
-        macos-install macos-clean download-src
+# Despliegue en los hosts del aula (ansible)
+SSH_USER  ?= ciber
+SSH_KEY   ?= $(HOME)/.ssh/id_rsa.pub
+INVENTORY ?= inventory/hosts.ini
 
-help: _header
-	${info }
-	@echo Opciones:
-	@echo -------------------
-	@echo setup-ssh
-	@echo -------------------
-	@echo download-src
-	@echo arm64 / amd64 / all / macos / macos-package
-	@echo -------------------
-	@echo apply
-	@echo -------------------
+.PHONY: all arm64 amd64 macos macos-package macos-install clean download-src \
+        setup-ssh apply help
 
-_header:
-	@echo -----
-	@echo Veyon
-	@echo -----
-
-# Recorre inventory/hosts.ini y copia la clave SSH a cada uno de sus hosts.
-setup-ssh:
-	@SSH_USER="$(SSH_USER)" SSH_KEY="$(SSH_KEY)" bash scripts/setup-ssh.sh "$(INVENTORY)"
-
-apply:
-	@ansible-playbook -i "$(INVENTORY)" playbook.yml --ask-become-pass
-
-## all: arm64 + amd64
+## all: arm64 + amd64 (objetivo por omisión)
 all: arm64 amd64
 
-## arm64 nativo (actualiza antes el checkout único de Veyon)
+## arm64: .deb arm64 nativo, compilado en Docker
 arm64: download-src
 	@echo "── veyon .deb  arch=arm64  imagen=$(IMAGE) ──"
 	@mkdir -p $(OUT)
@@ -104,7 +76,7 @@ arm64: download-src
 		$(IMAGE) \
 		$(SCRIPT)
 
-## amd64 emulado en ARM (requiere qemu binfmt en Docker Desktop)
+## amd64: .deb amd64 emulado en Docker
 amd64: download-src
 	@echo "── veyon .deb  arch=amd64  imagen=$(IMAGE) ──"
 	@mkdir -p $(OUT)
@@ -116,13 +88,12 @@ amd64: download-src
 		$(IMAGE) \
 		$(SCRIPT)
 
-## macos nativo (requiere Xcode CLT y las dependencias de Homebrew)
-## El script actualiza el checkout único de Veyon antes de compilar.
+## macos: bundle y DMG nativos de macOS
 macos:
 	@echo "── veyon  macOS nativo  prefix=$(PREFIX) ──"
 	@PREFIX="$(PREFIX)" bash scripts/build-veyon-macos.sh
 
-## macos-package: solo reempaqueta el bundle existente en un DMG
+## macos-package: reempaqueta el bundle existente en un DMG
 macos-package:
 	@bash scripts/package-veyon-macos.sh
 
@@ -130,10 +101,45 @@ macos-package:
 macos-install:
 	@bash scripts/install-veyon-macos.sh
 
-## macos-clean: elimina el workspace de compilación de macOS
-macos-clean:
-	@bash scripts/build-veyon-macos.sh --clean
+## clean: borra los .deb generados y el workspace de macOS
+##        (el checkout upstream en build/veyon se conserva)
+clean:
+	@echo "── limpiar ──"
+	@rm -rf $(OUT)
+	@rm -rf $(ROOT_DIR)/build/veyon-macos
+	@for id in $$(docker ps -aq --filter name=veyon 2>/dev/null); do \
+		docker rm -f "$$id" >/dev/null 2>&1 || true; \
+	done
+	@echo "    limpio (se conserva el checkout de Veyon en build/veyon)"
 
-## download-src: deja el checkout ÚNICO de Veyon clonado y actualizado
+## download-src: clona/actualiza el checkout ÚNICO de Veyon y sus submodules
 download-src:
 	@bash $(ROOT_DIR)/scripts/veyon-source.sh update
+
+# ── Despliegue ─────────────────────────────────────────────────────────────
+
+## setup-ssh: copia la clave SSH a los hosts del inventario
+setup-ssh:
+	@SSH_USER="$(SSH_USER)" SSH_KEY="$(SSH_KEY)" bash scripts/setup-ssh.sh "$(INVENTORY)"
+
+## apply: aplica el playbook de ansible a los hosts del inventario
+apply:
+	@ansible-playbook -i "$(INVENTORY)" playbook.yml --ask-become-pass
+
+## help: lista los objetivos disponibles
+help:
+	@echo "Veyon — compilación y despliegue"
+	@echo
+	@echo "Compilación"
+	@echo "  all             arm64 + amd64 (por omisión)"
+	@echo "  arm64           .deb arm64 nativo   (~5 min en Apple Silicon)"
+	@echo "  amd64           .deb amd64 emulado   (~15-30 min)"
+	@echo "  macos           bundle y DMG nativos de macOS"
+	@echo "  macos-package   reempaqueta el bundle existente en un DMG"
+	@echo "  macos-install   instala el bundle en /Applications"
+	@echo "  download-src    clona/actualiza el checkout único de Veyon"
+	@echo "  clean           borra los .deb generados y el workspace de macOS"
+	@echo
+	@echo "Despliegue (ansible)"
+	@echo "  setup-ssh       copia la clave SSH a los hosts del inventario"
+	@echo "  apply           aplica el playbook a los hosts del inventario"

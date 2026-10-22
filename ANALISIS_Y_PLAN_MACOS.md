@@ -755,8 +755,10 @@ make macos
 # Solo configure
 ./scripts/build-veyon-macos.sh --no-build
 
-# Limpiar el workspace
-make macos-clean
+# Limpiar el workspace de macOS (y los .deb generados)
+make clean
+# o, solo el workspace de macOS:
+./scripts/build-veyon-macos.sh --clean
 
 # Reempaquetar el bundle existente
 make macos-package
