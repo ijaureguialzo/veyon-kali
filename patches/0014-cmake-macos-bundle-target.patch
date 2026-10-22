@@ -95,7 +95,7 @@ index 000000000..b57cf4fc7
 +
 +add_custom_target(macos_bundle_icon DEPENDS "${icns_file}")
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 2e2017d72..e4bbbefb8 100644
+index 2c69db8ac..e936be443 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -137,6 +137,11 @@ else()
