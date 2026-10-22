@@ -5,7 +5,7 @@
 #
 # Uso:
 #    make               # muestra la ayuda con los objetivos disponibles
-#    make all           # arm64 nativo + amd64 emulado
+#    make all           # arm64 nativo + amd64 emulado + paquete de macOS
 #    make arm64         # solo arm64 (~5 min en Apple Silicon)
 #    make amd64         # solo amd64 (emulado, ~15-30 min)
 #    make macos         # build nativo para macOS (arm64/x86_64)
@@ -65,8 +65,8 @@ INVENTORY ?= inventory/hosts.ini
 # Sin argumentos, make muestra la ayuda; para compilar hay que pedir "all".
 .DEFAULT_GOAL := help
 
-## all: arm64 + amd64
-all: arm64 amd64
+## all: arm64 + amd64 + el paquete de macOS (bundle y DMG)
+all: arm64 amd64 macos
 
 ## arm64: .deb arm64 nativo, compilado en Docker
 arm64: download-src
@@ -135,7 +135,7 @@ help:
 	@echo "Veyon — compilación y despliegue"
 	@echo
 	@echo "Compilación"
-	@echo "  all             arm64 + amd64"
+	@echo "  all             arm64 + amd64 + macOS (bundle y DMG)"
 	@echo "  arm64           .deb arm64 nativo   (~5 min en Apple Silicon)"
 	@echo "  amd64           .deb amd64 emulado   (~15-30 min)"
 	@echo "  macos           bundle y DMG nativos de macOS"

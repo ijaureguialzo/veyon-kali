@@ -32,7 +32,7 @@ docker pull --platform linux/amd64 kalilinux/kali-rolling
 cd ~/proyectos/veyon-kali
 make arm64          # ~3-5 min (nativo)     -> package/veyon_<version>_arm64.deb
 make amd64          # ~15-30 min (emulado)   -> package/veyon_<version>_amd64.deb
-make all            # los dos en secuencia
+make all            # arm64 + amd64 + el paquete de macOS
 make clean          # borra los .deb generados y el workspace de macOS
 ```
 

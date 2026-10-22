@@ -542,7 +542,7 @@ macos:
 	@bash scripts/build-veyon-macos.sh "$(SRC)" "$(MACOUT)"
 
 ## macOS + Kali: ambos
-all: macos arm64 amd64
+all: arm64 amd64 macos
 ```
 
 **Nuevo `scripts/build-veyon-macos.sh`:**
