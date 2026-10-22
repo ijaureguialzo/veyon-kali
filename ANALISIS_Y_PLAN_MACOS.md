@@ -1499,3 +1499,38 @@ evidentes:
 
 La firma que funciona es, por tanto, sin hardened runtime, de dentro
 hacia fuera, y con los frameworks firmados por su directorio.
+
+### 8.8 Vista remota: marcos rasgados (race decode/paint)
+
+**Síntoma.** En la vista remota hacia los hosts Kali aparecían artefactos
+pixelados y marcos "rasgados" (filas de dos frames distintos a la vez),
+especialmente en displays Retina.
+
+**Causa.** `VncConnection::image()` devolvía un `QImage` que envolvía el
+buffer en el que la hebra de VNC (libvncclient) decodificaba *mientras* la
+hebra de GUI lo leía para pintar: sin lock a nivel de píxel, un repaint
+puede capturar un frame a medias. El upscale 2x de Retina amplía la
+ventana de solapamiento.
+
+**Fix.** `patches/0023-core-vncconnection-present-complete-updates.patch`
+(backport de upstream `20f0b6298`): la decodificación se hace en un buffer
+segundo y, al completarse la actualización, los rects se copian al `QImage`
+presentado bajo lock de escritura; `imageUpdated()` solo se emite entonces.
+`ComputerControlInterface` lo activa únicamente para `UpdateMode::Live`
+(vista interactiva a tamaño completo; en miniaturas de monitorización el
+coste de un framebuffer extra por máquina no compensa).
+
+**Verificación sintética** (hosts Kali inalcanzables): `tests/race/`
+contiene un servidor RFB 3.8 en Python (frames completos 800x600 a 50 fps
+con una barra que se desplaza 30 px/frame) y un cliente C++ que lee la
+imagen como lo haría `VncViewWidget` y detecta filar de frames distintos.
+
+| Ejecución | `RACE_MODE=0` (sin fix) | `RACE_MODE=1` (fix) |
+|---|---|---|
+| 30 s | 9/292 marcos rasgados | 0/292 |
+| 45 s | 13/438 | 0/438 |
+| 45 s | 5/528 | 0/529 |
+
+La tasa sin fix es dependiente de la fase decode/paint (~0.3–3%); con el
+fix, cero marcos rasgados en las ~1.850 capturas de todas las ejecuciones.
+Ver `tests/race/README.md` para uso y notas de depuración del protocolo.
