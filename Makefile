@@ -4,7 +4,8 @@
 #                 y Veyon para macOS de forma nativa
 #
 # Uso:
-#    make               # arm64 nativo + amd64 emulado
+#    make               # muestra la ayuda con los objetivos disponibles
+#    make all           # arm64 nativo + amd64 emulado
 #    make arm64         # solo arm64 (~5 min en Apple Silicon)
 #    make amd64         # solo amd64 (emulado, ~15-30 min)
 #    make macos         # build nativo para macOS (arm64/x86_64)
@@ -61,7 +62,10 @@ INVENTORY ?= inventory/hosts.ini
 .PHONY: all arm64 amd64 macos macos-package macos-install clean download-src \
         setup-ssh apply help
 
-## all: arm64 + amd64 (objetivo por omisión)
+# Sin argumentos, make muestra la ayuda; para compilar hay que pedir "all".
+.DEFAULT_GOAL := help
+
+## all: arm64 + amd64
 all: arm64 amd64
 
 ## arm64: .deb arm64 nativo, compilado en Docker
@@ -131,7 +135,7 @@ help:
 	@echo "Veyon — compilación y despliegue"
 	@echo
 	@echo "Compilación"
-	@echo "  all             arm64 + amd64 (por omisión)"
+	@echo "  all             arm64 + amd64"
 	@echo "  arm64           .deb arm64 nativo   (~5 min en Apple Silicon)"
 	@echo "  amd64           .deb amd64 emulado   (~15-30 min)"
 	@echo "  macos           bundle y DMG nativos de macOS"
