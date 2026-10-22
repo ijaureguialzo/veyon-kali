@@ -57,6 +57,10 @@ OUT      := ./package
 IMAGE    ?= kalilinux/kali-rolling
 SCRIPT   := /bin/bash /scripts/build-veyon.sh
 PREFIX   ?= /opt/homebrew
+# Mirrors de Kali para el índice de paquetes.  El CDN de http.kali.org reparte
+# cada petición a un mirror distinto y, si dos no están sincronizados entre
+# sí, apt-get update aborta; por eso se fija uno y se van probando.
+KALI_MIRRORS ?= http://mirror.raiolanetworks.com/kali/ http://mirror.es.cdn-perfprod.com/kali/ http://ftp.halifax.rwth-aachen.de/kali/
 
 .PHONY: help _header setup-ssh apply all arm64 amd64 macos macos-package \
         macos-install macos-clean download-src
@@ -96,6 +100,7 @@ arm64: download-src
 		-v $(SRC):/src:ro \
 		-v $(ROOT_DIR)/scripts:/scripts:ro \
 		-v $(OUT):/out \
+		-e KALI_MIRRORS="$(KALI_MIRRORS)" \
 		$(IMAGE) \
 		$(SCRIPT)
 
@@ -107,6 +112,7 @@ amd64: download-src
 		-v $(SRC):/src:ro \
 		-v $(ROOT_DIR)/scripts:/scripts:ro \
 		-v $(OUT):/out \
+		-e KALI_MIRRORS="$(KALI_MIRRORS)" \
 		$(IMAGE) \
 		$(SCRIPT)
 

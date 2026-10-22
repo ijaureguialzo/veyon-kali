@@ -14,15 +14,61 @@
 
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
+# Ningún comando de git debe abrir un pager dentro del contenedor.
+export GIT_PAGER=cat
+export PAGER=cat
 
 echo "──  Veyon .deb    arch: $(uname -m)    ──"
 
 # 1. Dependencias de build ─────────────────────────────────────────────────
+# El CDN de http.kali.org reparte cada petición a un mirror distinto, y si
+# dos de esos mirrors no están sincronizados entre sí la InRelease y el
+# Packages no casan: apt-get update aborta con "File has unexpected size
+# ... Mirror sync in progress?" y la compilación se cae sin motivo aparente.
+# Fijando un mirror concreto, ambos archivos salen siempre del mismo sitio.
+# Si el primero no responde, se va probando el siguiente.
+KALI_MIRRORS="${KALI_MIRRORS:-http://mirror.raiolanetworks.com/kali/ http://mirror.es.cdn-perfprod.com/kali/ http://ftp.halifax.rwth-aachen.de/kali/}"
+KALI_SOURCES=/etc/apt/sources.list.d/kali.sources
+
+set_kali_mirror() {
+    local mirror="$1"
+    if [ -f "$KALI_SOURCES" ]; then
+        # Formato deb822 (Kali actual): "URIs: http://http.kali.org/kali/"
+        sed -i "s|^URIs:.*|URIs: $mirror|" "$KALI_SOURCES"
+    else
+        # Formato clásico de una línea por repositorio
+        sed -i "s|http://[a-z0-9./-]*kali[a-z0-9./-]*|${mirror%/}|g" /etc/apt/sources.list
+    fi
+}
+
 echo "── apt-get update ──"
-apt-get update -qq 2>&1 | tail -3
+update_apt_index() {
+    local attempt delay=5 mirror
+    local -a mirrors
+    read -r -a mirrors <<< "$KALI_MIRRORS"
+    [ ${#mirrors[@]} -gt 0 ] || mirrors=("http://http.kali.org/kali/")
+    for attempt in 1 2 3 4; do
+        mirror="${mirrors[$(( (attempt - 1) % ${#mirrors[@]} ))]}"
+        set_kali_mirror "$mirror"
+        echo "   mirror: $mirror"
+        if apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 update -qq 2>&1 | tail -3; then
+            return 0
+        fi
+        if [ "$attempt" -lt 4 ]; then
+            echo "   (intento $attempt/4 fallido con este mirror; se prueba otro en ${delay}s)"
+            sleep "$delay"
+            delay=$((delay * 2))
+        fi
+    done
+    return 1
+}
+if ! update_apt_index; then
+    echo "   ERROR: no se pudo actualizar el índice de paquetes de Kali"
+    exit 1
+fi
 
 echo "── instalar dependencias de build (Qt5 + libvnc empaquetado) ──"
-apt-get install -y --no-install-recommends \
+if ! apt-get install -y --no-install-recommends \
     build-essential cmake ninja-build git fakeroot dpkg-dev \
     pkg-config xorg-dev libx11-dev \
     qtbase5-dev qtbase5-private-dev \
@@ -32,7 +78,10 @@ apt-get install -y --no-install-recommends \
     libldap-dev libsasl2-dev libproc2-dev libfakekey-dev \
     libxkbcommon-x11-dev libxcb-xinput-dev libxcb1-dev \
     file xz-utils \
-     2>&1 | tail -15
+     2>&1 | tail -15; then
+    echo "   ERROR: no se pudieron instalar las dependencias de build"
+    exit 1
+fi
 
 # 2. Copiar fuente a workspace editable (/work) — /src es read-only ───────────
 echo "── preparar workspace /work ──"
