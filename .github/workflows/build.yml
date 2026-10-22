@@ -15,14 +15,6 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      runner_arm64:
-        description: "Runner de la build arm64 (el emulado va más lento)"
-        type: choice
-        default: ubuntu-24.04-arm
-        options:
-          - ubuntu-24.04-arm
-          - ubuntu-24.04
 
 permissions:
   contents: read
@@ -41,15 +33,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # El repositorio es público, así que el runner ARM nativo está
+          # disponible y la build va sin emular.
           - arch: arm64
-            # El runner ARM es nativo; con "ubuntu-24.04" se emula con qemu.
-            # En repositorios privados sin runners ARM se puede fijar la
-            # variable de repositorio ARM64_RUNNER con la etiqueta propia.
-            runner: ${{ inputs.runner_arm64 || vars.ARM64_RUNNER || 'ubuntu-24.04-arm' }}
-            qemu: ${{ (inputs.runner_arm64 || vars.ARM64_RUNNER || 'ubuntu-24.04-arm') != 'ubuntu-24.04-arm' }}
+            runner: ubuntu-24.04-arm
           - arch: amd64
             runner: ubuntu-24.04
-            qemu: false
     steps:
       - name: Clonar el repositorio
         uses: actions/checkout@v4
@@ -61,12 +50,6 @@ jobs:
           key: veyon-src-${{ matrix.arch }}-${{ github.sha }}
           restore-keys: |
             veyon-src-${{ matrix.arch }}-
-
-      - name: qemu (solo hace falta si el runner no es ARM)
-        if: matrix.qemu
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
 
       - name: Compilar el .deb
         run: make ${{ matrix.arch }}
@@ -81,7 +64,9 @@ jobs:
   # ── Bundle y DMG de macOS ────────────────────────────────────────────────
   macos:
     name: macOS
-    runs-on: macos-14
+    # Runner con Xcode 27 (arm64).  La imagen "macos-14" ya está
+    # obsoleta y la de macOS 26 va con un Xcode anterior.
+    runs-on: xcode-27
     timeout-minutes: 90
     env:
       # Homebrew de los runners ARM vive aquí; es el valor por omisión del
@@ -95,13 +80,17 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/Library/Caches/Homebrew
-          key: brew-${{ runner.os }}-qt6-cmake-ninja
+          key: brew-${{ runner.os }}-veyon-macos
           restore-keys: |
             brew-${{ runner.os }}-
 
       - name: Dependencias de Homebrew
         run: |
-          brew install cmake ninja qt qttools qtshadertools qttranslations qt5compat qca openssl@3
+          # libvncserver es obligatorio: el upstream lo busca en el sistema
+          # y aborta si no lo encuentra (la alternativa sería compilar la
+          # copia que trae en 3rdparty).
+          brew install cmake ninja libvncserver \
+            qt qttools qtshadertools qttranslations qt5compat qca openssl@3
 
       - name: Cache del checkout de Veyon
         uses: actions/cache@v4

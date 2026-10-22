@@ -49,13 +49,16 @@ Makefile:
 |---|---|---|
 | `deb` (arm64) | `ubuntu-24.04-arm` | `veyon_<version>_arm64.deb` |
 | `deb` (amd64) | `ubuntu-24.04` | `veyon_<version>_amd64.deb` |
-| `macos` | `macos-14` | `Veyon-<version>.dmg` |
+| `macos` | `xcode-27` | `Veyon-<version>.dmg` |
 
 Se dispara al hacer push a `main`, al abrir un PR y a mano (*Run
-workflow*).  Desde ese formulario se puede elegir el runner de la build
-arm64: el nativo (`ubuntu-24.04-arm`, rápido y gratis en repositorios
-públicos) o uno x86_64 con emulación con qemu, si el repositorio es
-privado y no hay runners ARM.
+workflow*).  Cada `.deb` se compila en un runner de su propia
+arquitectura, así que ninguno va emulado: el repositorio es público y
+el runner ARM nativo está disponible.
+
+El contenedor corre como root y la copia de trabajo conserva el
+propietario del runner, por lo que el script declara `/work` como
+directorio seguro de git antes de desplegar los submódulos.
 
 Cada ejecución sube los paquetes como artefactos y, al publicar una
 etiqueta `v*`, se crea además una release de GitHub con los tres

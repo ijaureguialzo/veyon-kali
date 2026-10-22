@@ -91,6 +91,11 @@ cp -a /src /work
 # 2b. Inicializar submodules (la fuente montada puede no tenerlos desplegados) ──
 echo "── git submodules ──"
 cd /work
+# El contenedor corre como root pero /work conserva el propietario del
+# anfitrión (el usuario del runner de CI), y git se niega a tocar un
+# repositorio propiedad de otro usuario ("dubious ownership").  Se declara
+# /work como directorio seguro antes de operar con git.
+git config --global --add safe.directory /work
 git submodule sync --recursive >/dev/null 2>&1 || true
 git submodule update --init --recursive 2>&1 | tail -15
 echo "   subs desplegados:"

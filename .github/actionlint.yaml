@@ -1,0 +1,8 @@
+# Configuración de actionlint (https://github.com/rhysd/actionlint).
+#
+# "xcode-27" es una etiqueta oficial de los runners alojados por GitHub
+# (imagen macOS con Xcode 27, en preview), pero la lista de etiquetas que
+# trae actionlint todavía no la incluye.
+self-hosted-runner:
+  labels:
+    - xcode-27
