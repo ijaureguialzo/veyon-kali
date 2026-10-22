@@ -1,9 +1,9 @@
 diff --git a/plugins/platform/macos/MacOSCoreFunctions.cpp b/plugins/platform/macos/MacOSCoreFunctions.cpp
 new file mode 100644
-index 000000000..d719e485b
+index 000000000..18304af84
 --- /dev/null
 +++ b/plugins/platform/macos/MacOSCoreFunctions.cpp
-@@ -0,0 +1,346 @@
+@@ -0,0 +1,353 @@
 +/*
 + * MacOSCoreFunctions.cpp - implementation of MacOSCoreFunctions class
 + *
@@ -36,12 +36,14 @@ index 000000000..d719e485b
 +#include <QScreen>
 +#include <QSocketNotifier>
 +#include <QStandardPaths>
++#include <QTextStream>
 +#include <QWidget>
 +#include <QWindow>
 +
 +#include <cstdlib>
 +
 +#include "MacOSCoreFunctions.h"
++#include "StandardInputReader.h"
 +
 +#include <CoreFoundation/CoreFoundation.h>
 +#include <IOKit/pwr_mgt/IOPMLib.h>
@@ -142,12 +144,17 @@ index 000000000..d719e485b
 +
 +
 +
-+QObject* MacOSCoreFunctions::notifyOnStandardInputReadyRead(const NotifierCallback& callback)
++StandardInputReader* MacOSCoreFunctions::createStandardInputReader(QObject* parent)
 +{
-+	auto* notifier = new QSocketNotifier( STDIN_FILENO, QSocketNotifier::Read, qApp );
-+	QObject::connect( notifier, &QSocketNotifier::activated, qApp,
-+					  [callback]( QSocketDescriptor ) { callback( qApp ); } );
-+	return notifier;
++	auto reader = new StandardInputReader(parent);
++
++	auto notifier = new QSocketNotifier(STDIN_FILENO, QSocketNotifier::Read, reader);
++	QObject::connect(notifier, &QSocketNotifier::activated,
++					 reader, [reader]() {
++		reader->lineRead(QTextStream(stdin).readLine());
++	});
++
++	return reader;
 +}
 +
 +
@@ -352,7 +359,7 @@ index 000000000..d719e485b
 +}
 diff --git a/plugins/platform/macos/MacOSCoreFunctions.h b/plugins/platform/macos/MacOSCoreFunctions.h
 new file mode 100644
-index 000000000..4a275e1e3
+index 000000000..1829ecee7
 --- /dev/null
 +++ b/plugins/platform/macos/MacOSCoreFunctions.h
 @@ -0,0 +1,71 @@
@@ -401,7 +408,7 @@ index 000000000..4a275e1e3
 +	bool prepareSessionBusAccess() override;
 +	void initNativeLoggingSystem( const QString& appName ) override;
 +	void writeToNativeLoggingSystem( const QString& message, Logger::LogLevel loglevel ) override;
-+	QObject* notifyOnStandardInputReadyRead(const NotifierCallback& callback) override;
++	StandardInputReader* createStandardInputReader(QObject* parent) override;
 +	void reboot() override;
 +	void powerDown( bool installUpdates ) override;
 +	void raiseWindow( QWidget* widget, bool stayOnTop ) override;
