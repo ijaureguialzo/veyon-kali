@@ -2,6 +2,25 @@
 
 Instalación de Veyon en un aula con Kali Linux.
 
+## Compilar los paquetes
+
+Los tres paquetes (`.deb` arm64, `.deb` amd64 y el bundle de macOS) se
+construyen en local con `make`:
+
+```shell
+make all       # arm64 + amd64 + macOS
+make arm64     # solo el .deb arm64
+make amd64     # solo el .deb amd64
+make macos     # solo el bundle y el DMG de macOS
+make help      # lista los objetivos
+```
+
+La misma compilación se ejecuta en GitHub Actions
+(`.github/workflows/build.yml`): cada `.deb` se compila en Docker con el
+mismo Makefile, y el paquete de macOS en un runner macOS.  Los artefactos
+se publican en cada ejecución y, al subir una etiqueta `v*`, se adjuntan
+además a la release de GitHub.
+
 ## Prerrequisitos
 
 ### 1. Habilitar SSH en cada host

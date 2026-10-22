@@ -1,0 +1,162 @@
+name: build
+
+# Construye los tres paquetes del proyecto:
+#   * .deb arm64  (Docker, nativo en un runner ARM)
+#   * .deb amd64  (Docker, nativo en un runner x86_64)
+#   * bundle .app + DMG de macOS
+#
+# Los .deb se compilan en Docker con el mismo Makefile que en local, así que
+# la CI y el puesto de trabajo hacen exactamente lo mismo.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      runner_arm64:
+        description: "Runner de la build arm64 (el emulado va más lento)"
+        type: choice
+        default: ubuntu-24.04-arm
+        options:
+          - ubuntu-24.04-arm
+          - ubuntu-24.04
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── .deb para Kali (arm64 y amd64) ───────────────────────────────────────
+  deb:
+    name: .deb ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            # El runner ARM es nativo; con "ubuntu-24.04" se emula con qemu.
+            # En repositorios privados sin runners ARM se puede fijar la
+            # variable de repositorio ARM64_RUNNER con la etiqueta propia.
+            runner: ${{ inputs.runner_arm64 || vars.ARM64_RUNNER || 'ubuntu-24.04-arm' }}
+            qemu: ${{ (inputs.runner_arm64 || vars.ARM64_RUNNER || 'ubuntu-24.04-arm') != 'ubuntu-24.04-arm' }}
+          - arch: amd64
+            runner: ubuntu-24.04
+            qemu: false
+    steps:
+      - name: Clonar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Cache del checkout de Veyon
+        uses: actions/cache@v4
+        with:
+          path: build/veyon
+          key: veyon-src-${{ matrix.arch }}-${{ github.sha }}
+          restore-keys: |
+            veyon-src-${{ matrix.arch }}-
+
+      - name: qemu (solo hace falta si el runner no es ARM)
+        if: matrix.qemu
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Compilar el .deb
+        run: make ${{ matrix.arch }}
+
+      - name: Subir el .deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: veyon-deb-${{ matrix.arch }}
+          path: package/*.deb
+          if-no-files-found: error
+
+  # ── Bundle y DMG de macOS ────────────────────────────────────────────────
+  macos:
+    name: macOS
+    runs-on: macos-14
+    timeout-minutes: 90
+    env:
+      # Homebrew de los runners ARM vive aquí; es el valor por omisión del
+      # Makefile, pero se deja explícito por si cambia.
+      PREFIX: /opt/homebrew
+    steps:
+      - name: Clonar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Cache de las descargas de Homebrew
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: brew-${{ runner.os }}-qt6-cmake-ninja
+          restore-keys: |
+            brew-${{ runner.os }}-
+
+      - name: Dependencias de Homebrew
+        run: |
+          brew install cmake ninja qt qttools qtshadertools qttranslations qt5compat qca openssl@3
+
+      - name: Cache del checkout de Veyon
+        uses: actions/cache@v4
+        with:
+          path: build/veyon
+          key: veyon-src-macos-${{ github.sha }}
+          restore-keys: |
+            veyon-src-macos-
+
+      - name: Compilar el bundle y el DMG
+        run: make macos
+
+      - name: Verificar el bundle
+        run: |
+          codesign -dv build/veyon-macos/build/Veyon.app 2>&1 | head -5 || true
+          hdiutil imageinfo build/veyon-macos/build/*.dmg >/dev/null \
+            && echo "::notice::el DMG es válido"
+
+      - name: Subir el DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: veyon-macos
+          path: build/veyon-macos/build/*.dmg
+          if-no-files-found: error
+
+  # ── Release con los tres paquetes ────────────────────────────────────────
+  release:
+    name: release
+    needs: [deb, macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Descargar los artefactos
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Publicar la release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mapfile -t FILES < <(find dist -type f \( -name '*.deb' -o -name '*.dmg' \))
+          if [ "${#FILES[@]}" -eq 0 ]; then
+            echo "::error::no se ha encontrado ningún paquete que publicar"
+            exit 1
+          fi
+          echo "Publicando ${#FILES[@]} ficheros en la release ${TAG}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${FILES[@]}" --clobber
+          else
+            gh release create "$TAG" "${FILES[@]}" --generate-notes \
+              --verify-tag --title "Veyon $TAG"
+          fi
