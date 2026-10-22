@@ -10,11 +10,17 @@ name: build
 
 on:
   push:
-    branches: [main]
+    # La rama del repositorio es "master"; se deja "main" por si se renombra.
+    branches: [master, main]
     tags: ["v*"]
   pull_request:
-    branches: [main]
+    branches: [master, main]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Etiqueta v* para publicar la release (opcional)"
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -134,12 +140,19 @@ jobs:
   release:
     name: release
     needs: [deb, macos]
-    if: startsWith(github.ref, 'refs/tags/v')
+    # La release se publica cuando la ejecucion viene de una etiqueta v* o
+    # cuando se pide a mano con la entrada "release_tag".
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: write
     steps:
+      - name: Clonar el repositorio
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Descargar los artefactos
         uses: actions/download-artifact@v4
         with:
@@ -148,9 +161,19 @@ jobs:
       - name: Publicar la release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           set -euo pipefail
+          # Si la etiqueta no existe todavia, se crea apuntando al commit de
+          # la ejecucion, para poder publicar la release sin tener que
+          # etiquetar a mano.
+          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "Creando la etiqueta $TAG sobre $GITHUB_SHA"
+            # --no-sign evita que la configuración global de git pida firmar
+            # la etiqueta y abra el editor.
+            git tag --no-sign "$TAG" "$GITHUB_SHA"
+            git push origin "refs/tags/$TAG"
+          fi
           mapfile -t FILES < <(find dist -type f \( -name '*.deb' -o -name '*.dmg' \))
           if [ "${#FILES[@]}" -eq 0 ]; then
             echo "::error::no se ha encontrado ningún paquete que publicar"
