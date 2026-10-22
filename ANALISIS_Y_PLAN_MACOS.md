@@ -29,7 +29,7 @@ veyon-kali/
 | `make arm64` | `docker run --platform linux/arm64` de `kalilinux/kali-rolling` |
 | `make amd64` | `docker run --platform linux/amd64` (emulado por qemu) |
 | `make` / `all` | Ambos en secuencia |
-| `make download-src` | `git clone --recursive` + `git pull --recurse-submodules` si falta `build/veyon` |
+| `make download-src` | Deja actualizado el checkout ÚNICO de Veyon (`build/veyon`): lo clona si falta y hace `fetch` + fast-forward + `git submodule update --init --recursive` (ver `scripts/veyon-source.sh`) |
 | `make setup-ssh` | Copia la clave pública a cada host del inventario |
 | `make apply` | `ansible-playbook` con `vars/main.yml` |
 
@@ -705,14 +705,13 @@ Lo que sigue describe **lo que ya está hecho y verificado**, no lo planificado.
 
 ```
 veyon-kali/
-├── patches/                                  # 16 parches, se aplican en orden
+├── patches/                                  # parches, se aplican en orden
 │   ├── 0001-cmake-exclude-linux-build-on-apple.patch
 │   ├── 0002-cmake-findldap-macos-homebrew.patch
 │   ├── 0003-cmake-findsasl2-macos-homebrew.patch
 │   ├── 0004-ldap-include-sasl2-dir.patch
 │   ├── 0005-cmake-qt-nodiscard-file-open.patch
 │   ├── 0006-cmake-no-undefined-ld-flag-on-apple.patch
-│   ├── 0007-core-vncserverprotocol-format-truncation.patch
 │   ├── 0008-core-pch-stack-protector-collision.patch
 │   ├── 0009-core-plugin-module-suffix.patch
 │   ├── 0010-platform-add-macos-plugin.patch
@@ -723,15 +722,26 @@ veyon-kali/
 │   ├── 0016-cmake-macos-info-plist.patch
 │   └── 0017-core-register-plugin-library-path-before-qca.patch
 ├── scripts/
-│   ├── build-veyon.sh          # sin cambios (Kali)
-│   ├── build-veyon-macos.sh    # NUEVO: build nativo macOS
-│   ├── deploy-veyon-macos.sh   # NUEVO: bundle autosuficiente
-│   └── package-veyon-macos.sh  # NUEVO: bundle .app → DMG
+│   ├── veyon-source.sh        # checkout ÚNICO de Veyon: dónde vive, clone y update
+│   ├── build-veyon.sh         # sin cambios (Kali)
+│   ├── build-veyon-macos.sh   # NUEVO: build nativo macOS
+│   ├── deploy-veyon-macos.sh  # NUEVO: bundle autosuficiente
+│   └── package-veyon-macos.sh # NUEVO: bundle .app → DMG
 └── build/veyon-macos/          # workspace editable (generado, no versionado)
 ```
 
 El checkout upstream en `build/veyon` **permanece intacto**: todo cambio vive en
 los parches, que se aplican sobre una copia en `build/veyon-macos`.
+
+> **Checkout único.** `scripts/veyon-source.sh` es la única fuente de verdad
+> sobre el repositorio Git de Veyon: define dónde vive (`build/veyon` por
+> defecto), lo clona si falta y lo actualiza (fetch + fast-forward +
+> submodules) antes de cada compilación.  Lo usan `make download-src`,
+> `make arm64`/`amd64` (el contenedor monta ese checkout en read-only) y
+> `scripts/build-veyon-macos.sh` (que actualiza antes de copiar el workspace).
+> Con el upstream actualizado, los parches cuyo contenido ya está en upstream
+> se eliminan (fue el caso de 0007 y 0023) y los que solo cambian de
+> contexto se fusionan a tres vías.
 
 ### 8.3 Uso
 
@@ -782,7 +792,7 @@ dependencias innecesarias.
 | `QFile::open() [[nodiscard]]` | Qt 6.10+ con `-Werror` | `QT_NO_USE_NODISCARD_FILE_OPEN` (parche 0005) |
 | `no platform plugin available!` | plugins CMake `MODULE` son `.so`, se buscaban `.dylib` | `VEYON_MODULE_LIBRARY_SUFFIX` (parche 0009) |
 | `Log path ... is a symlink/junction` | `/var` es symlink a `/private/var` en macOS | se omite la comprobación en Apple (parche 0012) |
-| `-Wformat-truncation` | buffer RFB de 13 bytes, envío de 12 | parche 0007 |
+| `-Wformat-truncation` | buffer RFB de 13 bytes, envío de 12 | upstream ya lo corrige (parche 0007 retirado) |
 | PCH pierde `-fstack-protector-strong` | sobrescritura de `COMPILE_OPTIONS` | `target_compile_options` (parche 0008) |
 | QCA carga los providers de Homebrew | ruta de plugins compilada en el framework de QCA | ruta neutralizada + `initLibraryPaths()` (parche 0017) |
 | El bundle carga el *legacy provider* de OpenSSL de Homebrew | `MODULESDIR` compilado en `libcrypto` | directorio neutralizado en el despliegue |
@@ -1512,10 +1522,12 @@ hebra de GUI lo leía para pintar: sin lock a nivel de píxel, un repaint
 puede capturar un frame a medias. El upscale 2x de Retina amplía la
 ventana de solapamiento.
 
-**Fix.** `patches/0023-core-vncconnection-present-complete-updates.patch`
-(backport de upstream `20f0b6298`): la decodificación se hace en un buffer
-segundo y, al completarse la actualización, los rects se copian al `QImage`
-presentado bajo lock de escritura; `imageUpdated()` solo se emite entonces.
+**Fix.** Backport de upstream `20f0b6298` (el parche local
+`patches/0023-core-vncconnection-present-complete-updates.patch` se retiró
+al quedar el fix en el upstream que se descarga): la decodificación se hace en
+un buffer segundo y, al completarse la actualización, los rects se copian al
+`QImage` presentado bajo lock de escritura; `imageUpdated()` solo se emite
+entonces.
 `ComputerControlInterface` lo activa únicamente para `UpdateMode::Live`
 (vista interactiva a tamaño completo; en miniaturas de monitorización el
 coste de un framebuffer extra por máquina no compensa).

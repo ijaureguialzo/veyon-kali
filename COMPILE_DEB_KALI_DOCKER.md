@@ -9,16 +9,17 @@ la máquina Kali remota.
 - Host: Mac Apple-Silicon (`aarch64`), Docker Desktop.
 - Imagen: `kalilinux/kali-rolling` (multi-arquitectura; mismo digest para las
   dos arquitecturas).
-- Fuente: `/Users/widemos/proyectos/veyon` con submodules inicializados.
+- Fuente: el checkout **único** de Veyon en `build/veyon` (submodules
+  incluidos), que `scripts/veyon-source.sh` clona y mantiene actualizado.
 
 ## Requisitos previos
 
 ```bash
-# 1. Submodules (obligatorio; el .ro-mount del Makefile necesita 3rdparty real)
-cd ~/proyectos/veyon
-git submodule update --init --recursive    # despliega ultravnc, x11vnc, libvncserver,
-                                          # libfakekey, qthttpserver, kldap, kldap-qt5
-                                          # (+ anidados: doxygen-awesome-css, novnc, http-parser)
+# 1. Fuente (opcional: make arm64/amd64 ya lo hacen por su cuenta)
+make download-src  # clona build/veyon si falta y lo actualiza
+                   # (fetch + fast-forward + submodules: ultravnc, x11vnc,
+                   #  libvncserver, libfakekey, qthttpserver, kldap,
+                   #  kldap-qt5 + anidados: doxygen-awesome-css, novnc, http-parser)
 
 # 2. Imagen kali en ambas arquitecturas
 docker pull --platform linux/arm64 kalilinux/kali-rolling
@@ -28,12 +29,16 @@ docker pull --platform linux/amd64 kalilinux/kali-rolling
 ## Ejecutar
 
 ```bash
-cd ~/proyectos/veyon
-make arm64          # ~3-5 min (nativo)     -> out/veyon_4.11.2.6_arm64.deb
-make amd64          # ~1-2 min (emulado)     -> out/veyon_4.11.2.6_amd64.deb
+cd ~/proyectos/veyon-kali
+make arm64          # ~3-5 min (nativo)     -> out/veyon_<version>_arm64.deb
+make amd64          # ~1-2 min (emulado)     -> out/veyon_<version>_amd64.deb
 make                # los dos en secuencia
 make clean          # borra ./out y contenedores colgantes
 ```
+
+`make arm64` y `make amd64` actualizan antes el checkout de Veyon: el
+contenedor monta esa misma copia en read-only (`/src`), así que la fuente que
+compila es siempre la última del upstream.
 
 ## Resultado verificado
 

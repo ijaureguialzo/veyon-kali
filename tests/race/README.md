@@ -1,13 +1,17 @@
 # VncConnection torn-frame race — synthetic A/B test
 
 Verifies the fix for the pixelated/torn artifacts in the macOS remote view
-(`patches/0023-core-vncconnection-present-complete-updates.patch`,
-upstream `20f0b6298`): the VNC decode thread wrote the client framebuffer
+(upstream `20f0b6298`): the VNC decode thread wrote the client framebuffer
 while the GUI paint thread read the same memory, so a repaint could catch
 a frame half-updated (rows from two different server frames at once). The
 fix decodes into a second buffer and copies the finished rectangles into
 the presented `QImage` under a write lock; `presentCompleteUpdates` is
 enabled for `UpdateMode::Live` (the full-size interactive view).
+
+The fix lives in the upstream Veyon checkout that every build downloads
+(`scripts/veyon-source.sh`), so the local backport patch
+`patches/0023-core-vncconnection-present-complete-updates.patch` was
+dropped once upstream carried it.
 
 ## Files
 
@@ -33,7 +37,7 @@ racy behaviour, `RACE_MODE=1` uses the fix. Expected: mode 0 reports
 
 ## Verified results
 
-macOS, veyon 4.11.2 + patches/0023, libvncclient 0.9.15, 800x600 full
+macOS, veyon 4.11.4 (fix upstream `20f0b6298`), libvncclient 0.9.15, 800x600 full
 frames at 50 fps:
 
 | run (seconds) | mode 0 (unfixed) | mode 1 (fix) |
