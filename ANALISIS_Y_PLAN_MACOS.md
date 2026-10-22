@@ -1548,3 +1548,53 @@ imagen como lo haría `VncViewWidget` y detecta filar de frames distintos.
 La tasa sin fix es dependiente de la fase decode/paint (~0.3–3%); con el
 fix, cero marcos rasgados en las ~1.850 capturas de todas las ejecuciones.
 Ver `tests/race/README.md` para uso y notas de depuración del protocolo.
+
+### 8.15 Localización: la aplicación no detectaba el idioma
+
+**Síntoma.** Al abrir Veyon en macOS la interfaz aparecía en inglés aunque
+el sistema estuviera en español, y el desplegable de idioma del configurador
+estaba vacío.
+
+**Causa.** Eran dos problemas independientes:
+
+1. La compilación se hacía con `-DWITH_TRANSLATIONS=OFF`, así que no se
+   generaba ni un solo fichero `.qm`.  El cargador de traducciones
+   (`core/src/TranslationLoader.cpp`) busca los ficheros en
+   `VeyonCore::translationsDirectory()`, que en macOS es
+   `Contents/MacOS/../Resources/translations`, y si no encuentra el idioma
+   cae de vuelta en `QLocale::C` (inglés).  El desplegable del configurador
+   (`configurator/src/GeneralConfigurationPage.cpp`) arma su lista con los
+   mismos ficheros, por lo que sin `.qm` la lista sale vacía.
+2. Aunque se generasen, el target `macos_bundle` copiaba los ejecutables,
+   la biblioteca, los plugins, el icono y el `Info.plist`, pero **no** el
+   directorio de traducciones, de modo que el bundle tampoco los llevaba.
+
+**Fix.**
+
+* `scripts/build-veyon-macos.sh` compila con `-DWITH_TRANSLATIONS=ON` (y
+  `scripts/build-veyon.sh`, para los `.deb` de Kali, también; allí hace falta
+  el paquete `qttools5-dev` del contenedor además de `qttools5-dev-tools`).
+* Nuevo módulo `cmake/modules/CopyTranslationsToBundle.cmake` (parche
+  `0014`): copia los `.qm` a `Contents/Resources/translations` y anota los
+  idiomas que habla la aplicación.
+* `cmake/modules/MacOSInfoPlist.cmake` (parche `0016`) declara
+  `CFBundleDevelopmentRegion`, `CFBundleAllowMixedLocalizations` y
+  `CFBundleLocalizations` con la lista de idiomas, de forma que macOS
+ macOS sabe los que soporta la aplicación.
+* `scripts/regen-macos-info-plist-patch.sh` regenera el parche `0016` tras
+  editar el workspace (el workspace se recrea en cada build, así que los
+  cambios hay que reflejarlos en el parche antes de recompilar).
+
+**Verificación.**
+
+* El bundle lleva 39 traducciones en
+  `Veyon.app/Contents/Resources/translations` y el `Info.plist` declara los
+  idiomas con `CFBundleLocalizations`.
+* La ruta que usa el runtime existe dentro del bundle y los ficheros cargan
+  (`veyon_es_ES.qm`, `veyon_de.qm`, …).
+* La aplicación abierta en un sistema `es_ES` muestra la interfaz en español
+  ("Bloquear", "Vista remota", "Control remoto", "Encender",
+  "Ubicaciones/Equipos"), lo que confirma la detección automática del idioma.
+* Los `.deb` de Kali incluyen las 39 traducciones en
+  `/usr/share/veyon/translations`, que es la ruta que espera el runtime
+  (`/usr/bin/../share/veyon/translations`).

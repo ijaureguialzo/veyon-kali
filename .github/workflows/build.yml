@@ -67,6 +67,20 @@ jobs:
           path: package/*.deb
           if-no-files-found: error
 
+      - name: Verificar las traducciones
+        run: |
+          # La aplicación muestra el idioma del sistema, pero el selector de
+          # la configuración solo ofrece los idiomas traducidos, asi que el
+          # paquete tiene que llevar los ficheros .qm.
+          for deb in package/*.deb; do
+            count=$(dpkg-deb -c "$deb" | grep -c '\.qm$')
+            echo "$deb: $count traducciones"
+            if [ "$count" -eq 0 ]; then
+              echo "::error::el paquete no incluye las traducciones"
+              exit 1
+            fi
+          done
+
   # ── Bundle y DMG de macOS ────────────────────────────────────────────────
   macos:
     name: macOS
@@ -128,6 +142,19 @@ jobs:
           codesign -dv build/veyon-macos/build/Veyon.app 2>&1 | head -5 || true
           hdiutil imageinfo build/veyon-macos/build/*.dmg >/dev/null \
             && echo "::notice::el DMG es válido"
+
+      - name: Verificar las traducciones
+        run: |
+          # Las traducciones van en Contents/Resources/translations y los
+          # idiomas que habla la aplicación se declaran en el Info.plist.
+          count=$(ls build/veyon-macos/build/Veyon.app/Contents/Resources/translations/*.qm | wc -l)
+          echo "traducciones en el bundle: $count"
+          if [ "$count" -eq 0 ]; then
+            echo "::error::el bundle no incluye las traducciones"
+            exit 1
+          fi
+          plutil -extract CFBundleLocalizations raw -o - \
+            build/veyon-macos/build/Veyon.app/Contents/Info.plist
 
       - name: Subir el DMG
         uses: actions/upload-artifact@v4

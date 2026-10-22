@@ -21,6 +21,10 @@ mismo Makefile, y el paquete de macOS en un runner macOS.  Los artefactos
 se publican en cada ejecución y, al subir una etiqueta `v*`, se adjuntan
 además a la release de GitHub.
 
+Los tres paquetes incluyen las traducciones de Veyon (39 idiomas), de modo
+que la aplicación arranca en el idioma del sistema y el configurador ofrece
+la lista de idiomas disponibles.
+
 ## Prerrequisitos
 
 ### 1. Habilitar SSH en cada host

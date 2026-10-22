@@ -176,7 +176,7 @@ cmake -G Ninja \
     -DCMAKE_INSTALL_PREFIX="$WORK_DIR/install" \
     -DWITH_QT6=ON \
     -DWITH_LTO=OFF \
-    -DWITH_TRANSLATIONS=OFF \
+    -DWITH_TRANSLATIONS=ON \
     -DWITH_TESTS=OFF \
     "$WORK_DIR" 2>&1 | tail -25
 

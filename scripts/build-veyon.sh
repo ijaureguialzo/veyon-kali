@@ -71,7 +71,7 @@ echo "── instalar dependencias de build (Qt5 + libvnc empaquetado) ──"
 if ! apt-get install -y --no-install-recommends \
     build-essential cmake ninja-build git fakeroot dpkg-dev \
     pkg-config xorg-dev libx11-dev \
-    qtbase5-dev qtbase5-private-dev \
+    qtbase5-dev qtbase5-private-dev qttools5-dev qttools5-dev-tools \
     libqca-qt5-2-dev libqca-qt5-2-plugins \
     libssl-dev libpam0g-dev \
     zlib1g-dev libpng-dev libjpeg-dev liblzo2-dev \
@@ -131,7 +131,7 @@ cmake -G Ninja \
     -DCMAKE_INSTALL_PREFIX=/usr \
     -DWITH_QT6=OFF \
     -DWITH_BUNDLED_LIBVNC=ON \
-    -DWITH_TRANSLATIONS=OFF \
+    -DWITH_TRANSLATIONS=ON \
     -DWITH_LTO=OFF \
     -DWITH_TESTS=OFF \
     .. 2>&1 | tail -25

@@ -129,8 +129,76 @@ index 000000000..ea634759a
 +	)
 +
 +add_custom_target(macos_bundle_icon DEPENDS "${icns_file}")
+diff --git a/cmake/modules/CopyTranslationsToBundle.cmake b/cmake/modules/CopyTranslationsToBundle.cmake
+new file mode 100644
+index 000000000..a04e07e99
+--- /dev/null
++++ b/cmake/modules/CopyTranslationsToBundle.cmake
+@@ -0,0 +1,62 @@
++# CopyTranslationsToBundle.cmake - Copy the translation files into the macOS bundle.
++#
++# Invoked in script mode with:
++#   -DTRANSLATIONS_DIR=<build>/translations
++#   -DBUNDLE_DIR=<build>/Veyon.app
++#
++# The runtime looks for the translations in the directory given by
++# VEYON_TRANSLATIONS_DIR, which for macOS is "../Resources/translations"
++# relative to the directory of the executable (Contents/MacOS), so they end
++# up in Contents/Resources/translations.
++#
++# The list of languages is also written next to the bundle, because the
++# Info.plist has to declare them in CFBundleLocalizations so that macOS
++# knows which languages the application speaks.
++
++if(NOT DEFINED TRANSLATIONS_DIR OR NOT DEFINED BUNDLE_DIR)
++	message(FATAL_ERROR "TRANSLATIONS_DIR and BUNDLE_DIR must be defined")
++endif()
++
++set(translations_target_dir "${BUNDLE_DIR}/Contents/Resources/translations")
++file(MAKE_DIRECTORY "${translations_target_dir}")
++
++# Only the compiled translations are copied, the .ts sources stay in the
++# source tree.
++file(GLOB translation_files "${TRANSLATIONS_DIR}/*.qm")
++
++set(copied 0)
++set(locales "")
++foreach(translation ${translation_files})
++	execute_process(
++		COMMAND ${CMAKE_COMMAND} -E copy "${translation}" "${translations_target_dir}/"
++		RESULT_VARIABLE copy_result
++		)
++	if(NOT copy_result EQUAL 0)
++		message(FATAL_ERROR "Failed to copy ${translation}")
++	endif()
++	math(EXPR copied "${copied} + 1")
++
++	# The name of the file is "<resource>_<locale>.qm", e.g. "veyon_es_ES.qm"
++	# or "qtbase_de.qm".  Only the translations of Veyon define the languages
++	# of the application.
++	get_filename_component(translation_name "${translation}" NAME)
++	if(translation_name MATCHES "^veyon_(.+)\\.qm$")
++		string(REPLACE "_" "-" locale "${CMAKE_MATCH_1}")
++		list(APPEND locales "${locale}")
++	endif()
++endforeach()
++
++if(copied EQUAL 0)
++	message(FATAL_ERROR
++		"No translation files were found in ${TRANSLATIONS_DIR}. "
++		"Build the project with -DWITH_TRANSLATIONS=ON")
++endif()
++
++# The languages are written to a file that the Info.plist module reads.
++list(REMOVE_DUPLICATES locales)
++list(SORT locales)
++string(REPLACE ";" "," locale_list "${locales}")
++file(WRITE "${BUNDLE_DIR}/Contents/Resources/locales.txt" "${locale_list}\n")
++
++message(STATUS "Copied ${copied} translation file(s) into the bundle")
++message(STATUS "Languages of the bundle: ${locale_list}")
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 2c69db8ac..e936be443 100644
+index 2c69db8ac..372006b5c 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -137,6 +137,11 @@ else()
@@ -178,7 +246,7 @@ index 2c69db8ac..e936be443 100644
  
  
  include(cmake/CPackDefinitions.cmake)
-@@ -388,3 +417,74 @@ if(VEYON_BUILD_ANDROID)
+@@ -388,3 +417,79 @@ if(VEYON_BUILD_ANDROID)
  
  	add_dependencies(create-apk-veyon-master prepare-apk)
  endif()
@@ -225,16 +293,21 @@ index 2c69db8ac..e936be443 100644
 +			-DBUNDLE_DIR=${CMAKE_BINARY_DIR}/${MACOS_BUNDLE_NAME}.app
 +			-P ${CMAKE_SOURCE_DIR}/cmake/modules/CopyPluginsToBundle.cmake
 +		COMMAND ${CMAKE_COMMAND}
++			-DTRANSLATIONS_DIR=${CMAKE_BINARY_DIR}/translations
++			-DBUNDLE_DIR=${CMAKE_BINARY_DIR}/${MACOS_BUNDLE_NAME}.app
++			-P ${CMAKE_SOURCE_DIR}/cmake/modules/CopyTranslationsToBundle.cmake
++		COMMAND ${CMAKE_COMMAND}
 +			-DMACOS_BUNDLE_NAME=${MACOS_BUNDLE_NAME}
 +			-DMACOS_BUNDLE_BUNDLE_ID=${MACOS_BUNDLE_BUNDLE_ID}
 +			-DMACOS_BUNDLE_VERSION=${MACOS_BUNDLE_VERSION}
 +			-DMACOS_BUNDLE_MIN_SYSTEM_VERSION=${MACOS_BUNDLE_MIN_SYSTEM_VERSION}
++			-DMACOS_BUNDLE_LOCALES_FILE=${CMAKE_BINARY_DIR}/${MACOS_BUNDLE_NAME}.app/Contents/Resources/locales.txt
 +			-P ${CMAKE_SOURCE_DIR}/cmake/modules/MacOSInfoPlist.cmake
 +		COMMENT "Staging macOS application bundle"
 +		VERBATIM
 +		)
 +
-+	add_dependencies(macos_bundle veyon-master veyon-cli veyon-configurator veyon-server veyon-service veyon-core macos-platform macos_bundle_icon)
++	add_dependencies(macos_bundle veyon-master veyon-cli veyon-configurator veyon-server veyon-service veyon-core macos-platform macos_bundle_icon veyon-translations)
 +
 +	# The plugins are loaded by the executables, so they need a runpath that
 +	# points to the core library and to the frameworks of the bundle.

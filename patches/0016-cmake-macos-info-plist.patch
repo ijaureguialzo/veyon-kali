@@ -1,15 +1,34 @@
 diff --git a/cmake/modules/MacOSInfoPlist.cmake b/cmake/modules/MacOSInfoPlist.cmake
 new file mode 100644
-index 000000000..18c279d38
+index 000000000..4e8d24efb
 --- /dev/null
 +++ b/cmake/modules/MacOSInfoPlist.cmake
-@@ -0,0 +1,41 @@
+@@ -0,0 +1,68 @@
 +# MacOSInfoPlist.cmake - Generate the Info.plist of the macOS application bundle.
 +
 +set(MACOS_BUNDLE_NAME "Veyon")
 +set(MACOS_BUNDLE_BUNDLE_ID "io.veyon.veyon")
 +set(MACOS_BUNDLE_SHORT_VERSION "${MACOS_BUNDLE_VERSION}")
 +set(MACOS_BUNDLE_MIN_SYSTEM_VERSION "${MACOS_BUNDLE_MIN_SYSTEM_VERSION}")
++
++# Los idiomas que declara la aplicación.  Los escribe el módulo
++# CopyTranslationsToBundle.cmake al copiar las traducciones, con el formato
++# "de,es-ES,fr".  Si no está el fichero, se declaran solo los de Veyon que
++# se conocen, para que el Finder no los muestre como desconocidos.
++set(languages "en")
++if(DEFINED MACOS_BUNDLE_LOCALES_FILE AND EXISTS "${MACOS_BUNDLE_LOCALES_FILE}")
++	file(READ "${MACOS_BUNDLE_LOCALES_FILE}" languages_content)
++	string(STRIP "${languages_content}" languages_content)
++	string(REPLACE "," ";" languages "${languages_content}")
++endif()
++
++set(languages_xml "")
++foreach(language ${languages})
++	if(NOT languages_xml STREQUAL "")
++		set(languages_xml "${languages_xml}\n")
++	endif()
++	set(languages_xml "${languages_xml}\t<string>${language}</string>")
++endforeach()
 +
 +set(plist_content
 +"<?xml version=\"1.0\" encoding=\"UTF-8\"?>
@@ -40,6 +59,14 @@ index 000000000..18c279d38
 +	<string>Veyon needs to send Apple events to control the local user session.</string>
 +	<key>NSLocalNetworkUsageDescription</key>
 +	<string>Veyon needs access to the local network to connect to remote computers.</string>
++	<key>CFBundleDevelopmentRegion</key>
++	<string>en</string>
++	<key>CFBundleAllowMixedLocalizations</key>
++	<true/>
++	<key>CFBundleLocalizations</key>
++	<array>
++${languages_xml}
++	</array>
 +</dict>
 +</plist>
 +")

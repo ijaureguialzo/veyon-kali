@@ -29,7 +29,7 @@ PATCH_DIR="$(dirname "$PATCH_FILE")"
 MODIFIED_FILES="CMakeLists.txt"
 
 # Ficheros nuevos que forman parte del bundle.
-NEW_FILES="cmake/modules/MacOSIcon.cmake"
+NEW_FILES="cmake/modules/MacOSIcon.cmake cmake/modules/CopyTranslationsToBundle.cmake"
 
 if [ ! -d "$WORK_DIR" ]; then
     echo "ERROR: no se encuentra el workspace en $WORK_DIR" >&2
