@@ -99,12 +99,12 @@ if [ "$DO_CLEAN" -eq 0 ]; then
     # LDAP (los parches 0002 y 0003 los buscan en los kegs de Homebrew).
     # Sin ellas el CMake aborta con un error que no dice qué falta.
     MISSING_LIBS=""
-    for keg in libvncserver openldap cyrus-sasl; do
+    for keg in libvncserver openldap cyrus-sasl librsvg; do
         [ -d "$PREFIX/opt/$keg" ] || MISSING_LIBS="$MISSING_LIBS $keg"
     done
     if [ -n "$MISSING_LIBS" ]; then
         echo "   ERROR: faltan las bibliotecas de Homebrew:$MISSING_LIBS"
-        echo "   brew install libvncserver openldap cyrus-sasl"
+        echo "   brew install libvncserver openldap cyrus-sasl librsvg"
         exit 1
     fi
 fi

@@ -1,9 +1,9 @@
 diff --git a/cmake/modules/MacOSIcon.cmake b/cmake/modules/MacOSIcon.cmake
 new file mode 100644
-index 000000000..b57cf4fc7
+index 000000000..ea634759a
 --- /dev/null
 +++ b/cmake/modules/MacOSIcon.cmake
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,125 @@
 +# MacOSIcon.cmake - Generate the application icon of the macOS bundle.
 +#
 +# The icon is built from the vector source of the master application
@@ -33,13 +33,48 @@ index 000000000..b57cf4fc7
 +# Se comprueba que las herramientas necesarias esten disponibles antes de
 +# perder tiempo generando las imagenes.
 +find_program(RESVG_CONVERT rsvg-convert)
++
++# iconutil viene con las command line tools de Xcode, pero no siempre esta
++# en el PATH: cuando hay varios Xcode instalados, /usr/bin/iconutil puede no
++# existir o apuntar a otro.  Se buscan tambien en los directorios de las
++# command line tools y, como ultimo recurso, se le pregunta a xcrun.
 +find_program(ICONUTIL iconutil)
 +
++if(NOT ICONUTIL)
++	find_program(ICONUTIL iconutil
++		HINTS
++			/Applications/Xcode.app/Contents/Developer/usr/bin
++			/Applications/Xcode_*.app/Contents/Developer/usr/bin
++			/Library/Developer/CommandLineTools/usr/bin
++		)
++endif()
++
++if(NOT ICONUTIL)
++	find_program(XCRUN xcrun)
++	if(XCRUN)
++		execute_process(
++			COMMAND "${XCRUN}" --find iconutil
++			OUTPUT_VARIABLE xcrun_iconutil
++			OUTPUT_STRIP_TRAILING_WHITESPACE
++			RESULT_VARIABLE xcrun_result
++			ERROR_QUIET)
++		if(xcrun_result EQUAL 0 AND EXISTS "${xcrun_iconutil}")
++			set(ICONUTIL "${xcrun_iconutil}")
++		endif()
++	endif()
++endif()
++
 +if(NOT RESVG_CONVERT OR NOT ICONUTIL)
++	set(missing "")
++	if(NOT RESVG_CONVERT)
++		set(missing "${missing} rsvg-convert (viene de librsvg: brew install librsvg)")
++	endif()
++	if(NOT ICONUTIL)
++		set(missing "${missing} iconutil (viene de las Xcode command line tools: xcode-select --install)")
++	endif()
 +	message(FATAL_ERROR
 +		"Se necesitan rsvg-convert e iconutil para generar el icono de la aplicacion. "
-+		"rsvg-convert viene de librsvg (brew install librsvg) e iconutil viene de las "
-+		"Xcode command line tools.")
++		"Falta:${missing}")
 +endif()
 +
 +# Los tamanos que exige el formato .icns, con el sufijo @2x para las

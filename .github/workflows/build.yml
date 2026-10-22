@@ -90,10 +90,21 @@ jobs:
           # encuentra: libvncserver para el VNC, y openldap y cyrus-sasl para
           # el plugin de LDAP (los parches 0002 y 0003 los buscan en los kegs
           # de Homebrew porque son keg-only).
+          # librsvg aporta rsvg-convert, que se usa para generar el icono de
+          # la aplicación.
           # "qt" ya arrastra qtbase, qttools, qtshadertools, qttranslations,
           # qt5compat y qthttpserver.
           # El OpenSSL no se instala: el runner ya lo trae en /opt/homebrew/lib.
-          brew install cmake ninja libvncserver openldap cyrus-sasl qt qca
+          brew install cmake ninja libvncserver openldap cyrus-sasl \
+            librsvg qt qca
+
+      - name: Herramientas de Xcode
+        run: |
+          # iconutil viene de las command line tools de Xcode (/usr/bin) y
+          # puede no estar en el PATH si el runner no expone el shim.  Se
+          # añade el directorio usr/bin del Xcode seleccionado por si acaso.
+          echo "Xcode seleccionado: $(xcode-select -p)"
+          echo "$(xcode-select -p)/usr/bin" >> "$GITHUB_PATH"
 
       - name: Cache del checkout de Veyon
         uses: actions/cache@v4
