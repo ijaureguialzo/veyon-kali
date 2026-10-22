@@ -86,11 +86,14 @@ jobs:
 
       - name: Dependencias de Homebrew
         run: |
-          # libvncserver es obligatorio: el upstream lo busca en el sistema
-          # y aborta si no lo encuentra (la alternativa sería compilar la
-          # copia que trae en 3rdparty).
-          brew install cmake ninja libvncserver \
-            qt qttools qtshadertools qttranslations qt5compat qca openssl@3
+          # El upstream busca estas librerías en el sistema y aborta si no las
+          # encuentra: libvncserver para el VNC, y openldap y cyrus-sasl para
+          # el plugin de LDAP (los parches 0002 y 0003 los buscan en los kegs
+          # de Homebrew porque son keg-only).
+          # "qt" ya arrastra qtbase, qttools, qtshadertools, qttranslations,
+          # qt5compat y qthttpserver.
+          # El OpenSSL no se instala: el runner ya lo trae en /opt/homebrew/lib.
+          brew install cmake ninja libvncserver openldap cyrus-sasl qt qca
 
       - name: Cache del checkout de Veyon
         uses: actions/cache@v4

@@ -89,10 +89,24 @@ if [ "$DO_CLEAN" -eq 0 ]; then
     for lib in QtCore QtNetwork QtWidgets qca-qt6; do
         if ! find_framework "$lib"; then
             echo "   ERROR: falta la librería $lib en $PREFIX"
-            echo "   brew install qtbase qttools qtshadertools qttranslations qt5compat qca"
+            echo "   brew install qt qttools qtshadertools qttranslations qt5compat qca"
             exit 1
         fi
     done
+
+    # Bibliotecas que el upstream busca en el sistema: libvncserver para el
+    # cliente y el servidor VNC, y openldap y cyrus-sasl para el plugin de
+    # LDAP (los parches 0002 y 0003 los buscan en los kegs de Homebrew).
+    # Sin ellas el CMake aborta con un error que no dice qué falta.
+    MISSING_LIBS=""
+    for keg in libvncserver openldap cyrus-sasl; do
+        [ -d "$PREFIX/opt/$keg" ] || MISSING_LIBS="$MISSING_LIBS $keg"
+    done
+    if [ -n "$MISSING_LIBS" ]; then
+        echo "   ERROR: faltan las bibliotecas de Homebrew:$MISSING_LIBS"
+        echo "   brew install libvncserver openldap cyrus-sasl"
+        exit 1
+    fi
 fi
 
 # 2. Workspace editable a partir del checkout upstream ──────────────────────

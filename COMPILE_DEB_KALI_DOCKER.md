@@ -60,6 +60,11 @@ El contenedor corre como root y la copia de trabajo conserva el
 propietario del runner, por lo que el script declara `/work` como
 directorio seguro de git antes de desplegar los submódulos.
 
+El job de macOS instala con Homebrew lo mismo que usa la máquina local:
+`libvncserver`, `openldap` y `cyrus-sasl` (los dos últimos son keg-only y
+por eso los parches 0002 y 0003 los buscan en `/opt/homebrew/opt/`), más
+`qt` y `qca`.  El OpenSSL no se instala porque el runner ya lo trae.
+
 Cada ejecución sube los paquetes como artefactos y, al publicar una
 etiqueta `v*`, se crea además una release de GitHub con los tres
 ficheros.
