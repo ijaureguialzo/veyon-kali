@@ -20,10 +20,14 @@ INVENTORY ?= inventory/hosts.ini
 #    * Imagen:
 #        docker pull --platform linux/arm64 kalilinux/kali-rolling
 #        docker pull --platform linux/amd64 kalilinux/kali-rolling
-#    * Submodules:  git submodule update --init --recursive
 #    * (opcional en ARM) qemu/binfmt registrado en Docker Desktop para amd64
+#    * La fuente (checkout + submodules) la deja lista `make download-src`
 #
 # Diseño:
+#     * Todos los procesos usan UNA SOLA copia del repositorio Git de Veyon
+#       (build/veyon por defecto).  scripts/veyon-source.sh es la única fuente
+#       de verdad: define dónde vive ese checkout, lo clona si falta y lo
+#       deja actualizado antes de cada compilación.
 #     * La fuente se monta en modo read-only (/src:ro) para no tocar el árbol
 #       del anfitrión.
 #     * build-veyon.sh copia la fuente a /work (escritura) y aplica ahí el
@@ -37,13 +41,25 @@ INVENTORY ?= inventory/hosts.ini
 #       build/veyon-macos y aplica los parches de patches/, de forma que el
 #       checkout upstream en build/veyon queda intacto.
 #     * El resultado es un stage ejecutable en build/veyon-macos/build/stage.
+#
+# Fuente única de Veyon:
+#     * download-src clona/actualiza el checkout único y sus submodules.
+#     * arm64/amd64 dependen de download-src: el contenedor monta el checkout
+#       en read-only, así que la actualización se hace en el anfitrión.
+#     * macOS no depende de download-src porque build-veyon-macos.sh actualiza
+#       el mismo checkout por su cuenta (mismo helper, misma copia).
 
 SHELL    := /bin/bash
-SRC      := ./build/veyon
+ROOT_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
+# Checkout único de Veyon (scripts/veyon-source.sh decide dónde vive).
+SRC      := $(shell bash $(ROOT_DIR)/scripts/veyon-source.sh path 2>/dev/null || echo $(ROOT_DIR)/build/veyon)
 OUT      := ./package
 IMAGE    ?= kalilinux/kali-rolling
 SCRIPT   := /bin/bash /scripts/build-veyon.sh
 PREFIX   ?= /opt/homebrew
+
+.PHONY: help _header setup-ssh apply all arm64 amd64 macos macos-package \
+        macos-install macos-clean download-src
 
 help: _header
 	${info }
@@ -72,29 +88,30 @@ apply:
 ## all: arm64 + amd64
 all: arm64 amd64
 
-## arm64 nativo
-arm64:
+## arm64 nativo (actualiza antes el checkout único de Veyon)
+arm64: download-src
 	@echo "── veyon .deb  arch=arm64  imagen=$(IMAGE) ──"
 	@mkdir -p $(OUT)
 	@docker run --rm --platform linux/arm64 \
 		-v $(SRC):/src:ro \
-		-v $(CURDIR)/scripts:/scripts:ro \
+		-v $(ROOT_DIR)/scripts:/scripts:ro \
 		-v $(OUT):/out \
 		$(IMAGE) \
 		$(SCRIPT)
 
 ## amd64 emulado en ARM (requiere qemu binfmt en Docker Desktop)
-amd64:
+amd64: download-src
 	@echo "── veyon .deb  arch=amd64  imagen=$(IMAGE) ──"
 	@mkdir -p $(OUT)
 	@docker run --rm --platform linux/amd64 \
 		-v $(SRC):/src:ro \
-		-v $(CURDIR)/scripts:/scripts:ro \
+		-v $(ROOT_DIR)/scripts:/scripts:ro \
 		-v $(OUT):/out \
 		$(IMAGE) \
 		$(SCRIPT)
 
 ## macos nativo (requiere Xcode CLT y las dependencias de Homebrew)
+## El script actualiza el checkout único de Veyon antes de compilar.
 macos:
 	@echo "── veyon  macOS nativo  prefix=$(PREFIX) ──"
 	@PREFIX="$(PREFIX)" bash scripts/build-veyon-macos.sh
@@ -111,6 +128,6 @@ macos-install:
 macos-clean:
 	@bash scripts/build-veyon-macos.sh --clean
 
+## download-src: deja el checkout ÚNICO de Veyon clonado y actualizado
 download-src:
-	@if [ ! -d build/veyon ]; then git clone --recursive https://github.com/veyon/veyon.g build/veyon; fi
-	@cd build/veyon && git pull --recurse-submodules
+	@bash $(ROOT_DIR)/scripts/veyon-source.sh update

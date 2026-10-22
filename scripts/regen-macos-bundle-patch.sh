@@ -20,7 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 WORK_DIR="${VEYON_MACOS_WORK_DIR:-$PROJECT_DIR/build/veyon-macos}"
-UPSTREAM_DIR="${VEYON_UPSTREAM_DIR:-$PROJECT_DIR/build/veyon}"
+# Checkout ÚNICO de Veyon (mismo que usan el Makefile y build-veyon-macos.sh).
+UPSTREAM_DIR="$(bash "$SCRIPT_DIR/veyon-source.sh" path)"
 PATCH_FILE="$PROJECT_DIR/patches/0014-cmake-macos-bundle-target.patch"
 PATCH_DIR="$(dirname "$PATCH_FILE")"
 

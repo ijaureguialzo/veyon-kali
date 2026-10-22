@@ -7,6 +7,9 @@
 #
 # La fuente /src está en read-only; una copia editable se crea en /work
 # para aplicar el parche de GCC-15 sin alterar el árbol del host.
+# /src es el checkout ÚNICO de Veyon: el anfitrión lo deja actualizado antes
+# de lanzar el contenedor (make download-src / scripts/veyon-source.sh), así
+# que aquí solo se inicializan los submodules que falten en la copia.
 # Resultado: /out/veyon_<version>_<arch>.deb
 
 set -euo pipefail

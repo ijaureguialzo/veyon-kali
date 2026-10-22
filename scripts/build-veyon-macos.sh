@@ -6,11 +6,16 @@
 # upstream se trabaja sobre una copia editable en $WORK_DIR a la que se le
 # aplican los parches de patches/.
 #
+# El checkout upstream es el ÚNICO que usa todo el proyecto (build/veyon por
+# defecto): se resuelve con scripts/veyon-source.sh y se actualiza antes de
+# compilar, de modo que la copia de trabajo parte siempre del mismo código.
+#
 # Uso:
 #     ./scripts/build-veyon-macos.sh              # build completo + bundle + DMG
 #     ./scripts/build-veyon-macos.sh --no-package # solo build
 #     ./scripts/build-veyon-macos.sh --no-build   # solo configure
 #     ./scripts/build-veyon-macos.sh --clean      # limpia el workspace
+#     ./scripts/build-veyon-macos.sh --no-update  # no actualiza el checkout
 #
 # Requisitos: Xcode CLT, Homebrew con qtbase/qttools/qtshadertools/qttranslations/
 # qt5compat/qca/libvncserver/openldap/cyrus-sasl/ninja.
@@ -20,7 +25,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-SOURCE_DIR="$PROJECT_DIR/build/veyon"
+# Checkout ÚNICO de Veyon (scripts/veyon-source.sh es la fuente de verdad).
+SOURCE_DIR="$(bash "$SCRIPT_DIR/veyon-source.sh" path)"
 PATCH_DIR="$PROJECT_DIR/patches"
 WORK_DIR="${VEYON_MACOS_WORK_DIR:-$PROJECT_DIR/build/veyon-macos}"
 BUILD_DIR="$WORK_DIR/build"
@@ -36,11 +42,13 @@ DEPLOYMENT_TARGET="${VEYON_MACOS_DEPLOYMENT_TARGET:-14.0}"
 DO_BUILD=1
 DO_CLEAN=0
 DO_PACKAGE=1
+DO_UPDATE=1
 for arg in "$@"; do
     case "$arg" in
         --no-build) DO_BUILD=0 ;;
         --clean)    DO_CLEAN=1 ;;
         --no-package) DO_PACKAGE=0 ;;
+        --no-update) DO_UPDATE=0 ;;
         *) echo "Opción desconocida: $arg" >&2; exit 2 ;;
     esac
 done
@@ -92,6 +100,14 @@ if [ "$DO_CLEAN" -eq 1 ]; then
     echo "── limpiar workspace ──"
     rm -rf "$WORK_DIR"
     exit 0
+fi
+
+# 2b. Actualizar el checkout ÚNICO de Veyon antes de compilar ───────────────
+# Se hace aquí y no solo en "make download-src" para que el script compile
+# siempre contra el mismo código, esté se invoque desde el Makefile o a mano.
+if [ "$DO_UPDATE" -eq 1 ]; then
+    echo "── actualizar checkout de Veyon ──"
+    bash "$SCRIPT_DIR/veyon-source.sh" update
 fi
 
 echo "── preparar workspace ──"
