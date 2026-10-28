@@ -1,0 +1,22 @@
+diff --git a/plugins/platform/macos/MacOSServiceFunctions.cpp b/plugins/platform/macos/MacOSServiceFunctions.cpp
+index 0000000..0000000
+@@ -265,7 +265,18 @@
+ 
+ 	if ( QFile::exists( plistPath ) == false )
+ 	{
+-		return false;
++		// The service is not installed in this domain.  There is nothing to
++		// configure, so report success instead of failing the whole
++		// configuration apply: a not installed service will not start on its
++		// own, which satisfies the requested start mode.  The configured
++		// value is stored in the configuration and applied when the service
++		// is installed later.
++		vWarning() << "setStartMode("
++			<< label
++			<< "): no service property list at"
++			<< plistPath
++			<< ", nothing to do";
++		return true;
+ 	}
+ 
+ 	const auto value = startMode == StartMode::Auto ? QStringLiteral( "true" ) : QStringLiteral( "false" );

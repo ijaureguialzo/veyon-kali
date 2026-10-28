@@ -1,0 +1,111 @@
+diff --git a/core/src/ConfigurationManager.cpp b/core/src/ConfigurationManager.cpp
+index 0000000..0000000
+@@ -22,16 +22,62 @@
+  *
+  */
+ 
++#include <QCoreApplication>
++#include <QFile>
++#include <QStandardPaths>
++#include <QTemporaryFile>
++
++#include "Configuration/JsonStore.h"
+ #include "Configuration/LocalStore.h"
+ #include "ConfigurationManager.h"
+ #include "Filesystem.h"
+ #include "PlatformCoreFunctions.h"
+ #include "PlatformNetworkFunctions.h"
++#include "VeyonCore.h"
+ #include "VeyonConfiguration.h"
+ #include "VeyonServiceControl.h"
+ 
+ 
++// On macOS the GUI must not run as root (a root re-launch through "do shell
++// script ... with administrator privileges" produces a process that macOS
++// will not activate as a GUI application).  When the system store cannot be
++// written from the current process, save the configuration to a temporary
++// JSON file and import it through the CLI, which is elevated for the import
++// only (a console tool, no GUI session required).  Returns true when the
++// elevated import succeeded.
++static bool saveConfigurationPrivileged( Configuration::Object& configuration )
++{
++#if defined(Q_OS_MACOS)
++	auto file = QTemporaryFile( QStandardPaths::writableLocation( QStandardPaths::TempLocation ) +
++							   QStringLiteral( "/.veyon-config-XXXXXX" ) );
++	file.setAutoRemove( false );
+ 
++	if ( file.open() == false )
++	{
++		return false;
++	}
++	// QTemporaryFile only has its final name after open(); using
++	// fileName() before would yield an empty path.
++	const auto fileName = file.fileName();
++	file.close();
++
++	Configuration::JsonStore( Configuration::Store::Scope::System, fileName ).flush( &configuration );
++
++	const auto veyonCli = QCoreApplication::applicationDirPath() + QStringLiteral( "/veyon-cli" );
++
++	const auto success = QFileInfo::exists( veyonCli ) &&
++				   VeyonCore::platform().coreFunctions().runProgramAsAdmin( veyonCli, { QStringLiteral( "config" ),
++												   QStringLiteral( "import" ), fileName } );
++	QFile::remove( fileName );
++	return success;
++#else
++	Q_UNUSED( configuration )
++	return false;
++#endif
++}
++
++
++
+ ConfigurationManager::ConfigurationManager( QObject* parent ) :
+ 	QObject( parent ),
+ 	m_configuration( VeyonCore::config() )
+@@ -42,8 +88,31 @@
+ 
+ bool ConfigurationManager::clearConfiguration()
+ {
+-	Configuration::LocalStore(Configuration::LocalStore::Scope::System).clear();
++	Configuration::LocalStore localStore(Configuration::LocalStore::Scope::System);
+ 
++	if( localStore.isWritable() == false && saveConfigurationPrivileged( m_configuration ) == false )
++	{
++		return false;
++	}
++
++	if( localStore.isWritable() == false )
++	{
++		// the privileged save already stored the current state; clearing the
++		// system store is done through the elevated CLI as well
++#if defined(Q_OS_MACOS)
++		const auto cli = QCoreApplication::applicationDirPath() + QStringLiteral( "/veyon-cli" );
++		if( QFileInfo::exists( cli ) == false ||
++			    VeyonCore::platform().coreFunctions().runProgramAsAdmin( cli, { QStringLiteral( "config" ),
++												   QStringLiteral( "clear" ) } ) == false )
++		{
++			return false;
++		}
++#endif
++		return true;
++	}
++
++	localStore.clear();
++
+ 	return true;
+ }
+ 
+@@ -93,6 +162,12 @@
+ 	Configuration::LocalStore localStore(Configuration::LocalStore::Scope::System);
+ 	if( localStore.isWritable() == false )
+ 	{
++#if defined(Q_OS_MACOS)
++		if( saveConfigurationPrivileged( m_configuration ) )
++		{
++			return true;
++		}
++#endif
+ 		m_errorString = tr( "Configuration is not writable. Please check your permissions!" );
+ 		return false;
+ 	}

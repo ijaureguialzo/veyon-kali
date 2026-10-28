@@ -1,0 +1,48 @@
+diff --git a/plugins/platform/macos/MacOSNetworkFunctions.cpp b/plugins/platform/macos/MacOSNetworkFunctions.cpp
+index 0000000..0000000
+@@ -36,6 +36,7 @@
+ 
+ #include <cstring>
+ 
++#include <QFileInfo>
+ #include <QHostAddress>
+ #include <QHostInfo>
+ #include <QNetworkInterface>
+@@ -190,7 +191,14 @@
+ 		return false;
+ 	}
+ 
+-	const auto tool = QStandardPaths::findExecutable( QStringLiteral( "socketfilterfw" ) );
++	// The tool lives in /usr/libexec/ApplicationFirewall, which is not part
++	// of the default search path of QStandardPaths::findExecutable().  Use
++	// the system location and fall back to a PATH lookup.
++	QString tool = QStringLiteral( "/usr/libexec/ApplicationFirewall/socketfilterfw" );
++	if ( QFileInfo::exists( tool ) == false )
++	{
++		tool = QStandardPaths::findExecutable( QStringLiteral( "socketfilterfw" ) );
++	}
+ 	if( tool.isEmpty() )
+ 	{
+ 		return false;
+@@ -205,6 +213,21 @@
+ 						   applicationPath } );
+ 	if( process.waitForFinished( 10000 ) == false || process.exitCode() != 0 )
+ 	{
++		// socketfilterfw refuses any modification without root privileges.
++		// A regular user (also an admin user: the tool only checks the
++		// effective uid) cannot change the rule list.  Report the situation
++		// and continue instead of failing the whole configuration apply:
++		// the settings are stored, and the firewall rule only matters when
++		// the local server accepts incoming connections.
++		if ( geteuid() != 0 )
++		{
++			vWarning() << "configureFirewallException("
++				<< applicationPath
++				<< ") failed:" << process.readAllStandardError().trimmed().toStdString();
++			vWarning() << "skipping firewall rule, requires root privileges";
++			return true;
++		}
++
+ 		return false;
+ 	}
+ 

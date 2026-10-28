@@ -1,0 +1,19 @@
+diff --git a/configurator/src/main.cpp b/configurator/src/main.cpp
+index 0000000..0000000
+@@ -59,8 +59,14 @@
+ 											  "be run with normal user privileges.") );
+ 	}
+ 
+-	if( VeyonConfiguration().isStoreWritable() == false &&
+-		VeyonCore::config().logLevel() != Logger::LogLevel::Debug )
++	if( VeyonConfiguration().isStoreWritable() == false
++#ifdef Q_OS_MACOS
++			// An admin user (or root) can still store the configuration:
++		// on macOS the save is performed through an elevated CLI import
++		// (see ConfigurationManager), so the window must not be blocked here.
++		    && VeyonCore::platform().coreFunctions().isRunningAsAdmin() == false
++#endif
++		    && VeyonCore::config().logLevel() != Logger::LogLevel::Debug )
+ 	{
+ 		QMessageBox::critical(nullptr,
+ 							  MainWindow::tr("Configuration not writable"),

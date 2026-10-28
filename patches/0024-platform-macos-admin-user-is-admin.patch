@@ -1,0 +1,123 @@
+diff --git a/plugins/platform/macos/MacOSCoreFunctions.cpp b/plugins/platform/macos/MacOSCoreFunctions.cpp
+index 0000000..0000000
+@@ -22,7 +22,9 @@
+  *
+  */
+ 
++#include <grp.h>
+ #include <sys/sysctl.h>
++#include <sys/types.h>
+ #include <unistd.h>
+ 
+ #include <QApplication>
+@@ -35,6 +37,8 @@
+ #include <QWindow>
+ 
+ #include <cstdlib>
++#include <set>
++#include <vector>
+ 
+ #include "MacOSCoreFunctions.h"
+ #include "StandardInputReader.h"
+@@ -246,7 +250,60 @@
+ 
+ bool MacOSCoreFunctions::isRunningAsAdmin() const
+ {
+-	return geteuid() == 0;
++	if ( geteuid() == 0 )
++	{
++		return true;
++	}
++
++	// An admin user (member of the "admin" group) can also store Veyon's
++	// system domain settings without root: on macOS the CFPreferences
++	// writes are performed by the system cfprefsd, which runs as root and
++	// checks the caller's group membership.  This matters because the
++	// configurator re-launches itself elevated when this returns false, and
++	// a process started through "do shell script ... with administrator
++	// privileges" is a root child of /bin/sh that macOS will not activate
++	// as a GUI application: its window is drawn inactive (greyed-out
++	// widgets) and never receives keyboard events or clipboard access.
++	// Root is only needed for users who are not in the admin group.
++	return isAdminUser();
++}
++
++
++
++bool MacOSCoreFunctions::isAdminUser() const
++{
++	// The gid of the "admin" group is 80 on macOS; resolve it by name as a
++	// fallback in case the value changes.
++	std::set<gid_t> adminGids{ 80 };
++	if ( struct group* entry = getgrnam( "admin" ) )
++	{
++		adminGids.insert( entry->gr_gid );
++	}
++
++	auto inGroup = [ &adminGids ]( gid_t gid ) { return adminGids.count( gid ) > 0; };
++
++	if ( inGroup( getegid() ) )
++	{
++		return true;
++	}
++
++	int count = getgroups( 0, nullptr );
++	if ( count > 0 && count <= 1024 )
++	{
++		std::vector<gid_t> groups( static_cast<size_t>( count ) );
++		if ( getgroups( count, groups.data() ) == count )
++		{
++			for ( auto gid : groups )
++			{
++				if ( inGroup( gid ) )
++				{
++					return true;
++				}
++			}
++		}
++	}
++
++	return false;
+ }
+ 
+ 
+@@ -257,17 +314,20 @@
+ 	// run a program with elevated privileges is to use the "do shell script"
+ 	// Apple event with administrator privileges, which requires the user to
+ 	// authenticate in a native dialog.
+-	NSString* programString = program.toNSString();
+-	NSMutableString* command = [NSMutableString stringWithString:@"/bin/sh -c "];
+-	[command appendString:[programString stringByAppendingString:@" "]];
++	// "do shell script" already runs the command through /bin/sh -c, so the
++	// command line must NOT be wrapped in another "sh -c": the words after
++	// the unquoted first word would become the outer shell's positional
++	// parameters ($0, $1, ...) instead of arguments of the program itself.
++	NSString* programEscaped = [program.toNSString() stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
++	NSMutableString* command = [NSMutableString stringWithFormat:@"'%@'", programEscaped];
+ 
+ 	for ( const auto& parameter : parameters )
+ 	{
+ 		NSString* escaped = [parameter.toNSString() stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
+-		[command appendFormat:@"'%@' ", escaped];
++		[command appendFormat:@" '%@'", escaped];
+ 	}
+ 
+-	[command appendString:@"> /dev/null 2>&1"];
++	[command appendString:@" > /dev/null 2>&1"];
+ 
+ 	NSAppleScript* script = [[NSAppleScript alloc] initWithSource:
+ 							  [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", command]];
+diff --git a/plugins/platform/macos/MacOSCoreFunctions.h b/plugins/platform/macos/MacOSCoreFunctions.h
+index 0000000..0000000
+@@ -52,6 +52,11 @@
+ 	void setSystemUiState( bool enabled ) override;
+ 	QString activeDesktopName() override;
+ 	bool isRunningAsAdmin() const override;
++
++	// Member of the "admin" group (gid 80).  Used by isRunningAsAdmin(): on
++	// macOS admin users can write the system domain through cfprefsd without
++	// root privileges, so they do not need an elevated re-launch.
++	bool isAdminUser() const;
+ 	bool runProgramAsAdmin( const QString& program, const QStringList& parameters ) override;
+ 	bool runProgramAsUser(const QString& program,
+ 						  const QStringList& parameters,
