@@ -13,9 +13,12 @@
 # El DMG contiene el bundle Veyon.app y un symlink a /Applications, de forma
 # que el usuario pueda arrastrar la aplicación sobre la carpeta.
 #
-# La imagen se prepara con diskutil en lugar de hdiutil, ya que diskutil es
-# la interfaz de disco con la cuenta de administración y permite trabajar
-# directamente sobre el dispositivo de bloque que se adjunta.
+# La imagen se prepara con diskutil en lugar de hdiutil: los subcomandos
+# attach/detach de hdiutil están obsoletos en los macOS recientes y emiten
+# la advertencia "use 'diskutil image attach ...' instead".  diskutil es
+# además la interfaz de disco con la cuenta de administración.  La única
+# excepción es la compresion final a UDZO, que sigue haciendo hdiutil:
+# diskutil no tiene subcomando de conversion y convert no está deprecado.
 
 set -euo pipefail
 
@@ -56,25 +59,20 @@ echo "── Empaquetar Veyon $VERSION para macOS ──"
 echo "── crear imagen de disco ──"
 rm -f "$DMG"
 
-# Se crea una imagen vacía y se le asigna una partición mediante diskutil.
-# El volumen se formatea después de adjuntar la imagen.
+# Se crea una imagen vacía con diskutil.  El sistema de ficheros es APFS:
+# es lo que admite "diskutil image create blank" (junto con ExFAT y MS-DOS)
+# y basta para montar el DMG en cualquier macOS >= 10.14, muy por delante
+# del requisito de la aplicacion (macOS 14).  El tamaño se especifica en
+# bytes, porque diskutil no acepta sufijos como "400m".
 rm -f "$DMG"
 
 TMP_DIR="$(mktemp -d)"
 TMP_IMG="$TMP_DIR/Veyon.dmg"
 
-# La imagen se crea como un archivo UDIF normal, que es el formato que
-# diskutil puede adjuntar y montar.  La creacion de la imagen corresponde a
-# hdiutil, mientras que el trabajo sobre el disco lo hace diskutil.
-TMP_IMG="$TMP_DIR/Veyon.dmg"
-
-hdiutil create \
-    -size "${IMG_SIZE_MB}m" \
-    -fs "HFS+J" \
-    -volname "$VOLUME_NAME" \
-    -layout SPUD \
-    -type UDIF \
-    -quiet \
+diskutil image create blank \
+    --size "$(( IMG_SIZE_MB * 1024 * 1024 ))" \
+    --fs APFS \
+    --volname "$VOLUME_NAME" \
     "$TMP_IMG"
 
 # 3. Adjuntar la imagen y formatear el volumen ──────────────────────────────
@@ -157,6 +155,9 @@ DEVICE=""
 
 # 7. Comprimir la imagen ────────────────────────────────────────────────────
 echo "── comprimir imagen ──"
+# UDZO solo se consigue con hdiutil: "diskutil image" no tiene subcomando
+# de conversion, y "hdiutil convert" no está deprecado (no emite la
+# advertencia que si emiten attach/detach/mount).
 hdiutil convert "$TMP_IMG" -format UDZO -o "$DMG" -quiet
 
 rm -rf "$STAGING"
@@ -169,4 +170,4 @@ fi
 SIZE="$(du -h "$DMG" | cut -f1)"
 echo
 echo "==> OK: $DMG  ($SIZE)"
-echo "    Montar con:  hdiutil attach \"$DMG\""
+echo "    Montar con:  diskutil image attach \"$DMG\"   (o doble clic en el Finder)"
