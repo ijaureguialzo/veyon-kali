@@ -1598,3 +1598,113 @@ estaba vacío.
 * Los `.deb` de Kali incluyen las 39 traducciones en
   `/usr/share/veyon/translations`, que es la ruta que espera el runtime
   (`/usr/bin/../share/veyon/translations`).
+
+### 8.16 GUI gris sin copia/pegado y guardado de la configuración en macOS
+
+**Síntoma.** Al abrir el Veyon Configurator (o Veyon) la ventana salía con
+todos los controles en gris, sin copia/pegado y sin responder al teclado.
+
+**Causa raiz (capa 1 — activacion GUI).** El `main.cpp` del configurador
+eleva con `runProgramAsAdmin()` si no «es admin».  Un proceso lanzado con
+`do shell script ... with administrator privileges` es un hijo de `/bin/sh`
+ejecutado por `kauth` **como root**: macOS **no lo activa** como aplicación
+GUI (un proceso sin sesión no puede ser «la app activa»).  Consecuencias
+confirmadas en vivo con `log show`:
+
+* `RunningBoard` no le asigna rol: `failed to get role ... Operation not
+  supported, falling back to setting priority`.
+* TCC deniega sus consultas (`kTCCServiceListenEvent ... was denied`).
+* La ventana se dibuja pero queda **inactiva**: widgets grises, sin eventos
+  de teclado, sin portapapeles.  Es el síntoma exacto.
+
+Además, `MacOSCoreFunctions::isRunningAsAdmin()` solo miraba
+`geteuid() == 0`, de modo que **cualquier** usuario no-root (aunque sea
+miembro de `admin`) provocaba la elevacion y, con ella, la ventana zombie.
+
+**Capa 2 — la elevacion ni siquiera pasaba los argumentos.**
+`runProgramAsAdmin()` construía
+`do shell script "/bin/sh -c /program param1 param2 ..."`.  `do shell
+script` ya ejecuta la cadena con `/bin/sh -c`; con la capa extra, las
+palabras tras la primera (el programa, sin citar) se convertían en
+parámetros posicionales ($0, $1, ...) del sh externo y **el programa
+recibía cero argumentos**.  Un `veyon-cli` elevado así arrancaba sin módulo
+("No module specified...").  Fix: la orden es ahora
+`do shell script "'/program' 'param1' 'param2' > /dev/null 2>&1"`
+(verificado con `osascript` + `echo`).
+
+**Capa 3 — la configuración de sistema no es escribible para el usuario.**
+El plist de sistema (`/Library/Preferences/com.veyon-solutions.Veyon.plist`,
+propiedad `root:wheel`) hace que `QSettings::isWritable()` devuelva `false`
+(probe de escritura real de `qsettings_mac.cpp`), y:
+
+* `ConfigurationManager::saveConfiguration()` devolvía error y bloqueaba
+  cualquier guardado (también el botón *Aplicar* del configurador).
+* `configurator/src/main.cpp` bloqueaba el arranque completo con un mensaje
+  crítico si `isStoreWritable()` era false.
+
+**Fix (capa 3).**
+
+* `ConfigurationManager::saveConfiguration()` (parche `0027`): si la tienda
+  local no es escribible, volca la configuración a un `QTemporaryFile`
+  (JSON, `Configuration::JsonStore`) y lanza **elevado** el propio
+  `veyon-cli config import <fichero>`; el proceso elevado (root) la importa,
+  la guarda por `cfprefsd` (que **sí** termina escribiendo el plist de
+  sistema) y aplica servicios/firewall con privilegios.  Ojo: el nombre del
+  fichero hay que leerlo **después** de `QTemporaryFile::open()` — antes
+  `fileName()` devuelve cadena vacía (verificado: el import elevado recibía
+  un fichero inexistente y fallaba en silencio).
+* `configurator/src/main.cpp` (parche `0028`): la puerta de «no escribible»
+  en macOS además acepta `isRunningAsAdmin()`: un usuario admin arranca sin
+  bloqueos (el guardado usa el paso elevado de 0027).
+
+**Fix (capa 1).** `isRunningAsAdmin()` (parche `0024`) también devuelve
+verdadero para miembros del grupo `admin` (gid 80, vía `getgrouplist`,
+cubierto grupo principal y secundarios): un admin **no** se eleva, la app
+arranca en su sesión normal y macOS la activa correctamente (ventana
+interactiva, copia/pegado).
+
+**Otros fallos de la cadena de «Aplicar» (aplicación como root/admin):**
+
+* `MacOSServiceFunctions::setStartMode()` (parche `0025`): si el LaunchAgent
+  no está instalado devolvía `false` y **abortaba todo el Apply**.  Ahora
+  avisa y continúa (lo que falta, instalar el servicio, se indica en el
+  mensaje).
+* `MacOSNetworkFunctions::configureFirewallException()` (parche `0026`):
+  `QStandardPaths::findExecutable("socketfilterfw")` no encuentra la
+  herramienta (vive en `/usr/libexec/ApplicationFirewall/`); ahora usa la
+  ruta absoluta y, sin root, degrada a aviso en vez de error.
+
+**Advertencia de proceso — el build recrea el workspace.**
+`scripts/build-veyon-macos.sh` hace `rm -rf build/veyon-macos` y lo re-copia
+desde `build/veyon` + aplica los parches de `patches/`.  Cualquier edición
+hecha directamente en el workspace **se pierde en la siguiente build** si no
+se refleja antes en el parche correspondiente (regenerar con `diff -u`
+contra la base limpia).  Esto causó que una corrección «aparentemente
+instalada» no llegara al bundle.
+
+**Verificación (macOS 27.2, Apple Silicon, usuario en grupo admin).**
+
+* Configurator sin elevacion: ventana interactiva, **copia/pegar funciona**
+  (confirmado por el usuario), sin cuadro de contraseña al arrancar.
+* `veyon-cli config set VncConnection/ConnectTimeout 10000` como usuario:
+  pide la contraseña una vez, la importación elevada importa+guarda+aplica,
+  `[OK]` rc=0; los avisos pendientes (servicio no instalado, firewall sin
+  root) son no fatales.
+* Persistencia: `/Library/Preferences/com.veyon-solutions.Veyon.plist`
+  (root:wheel) muestra `VncConnection.ConnectTimeout => 10000` escrito por
+  `cfprefsd`; `veyon-cli config get` como usuario devuelve `10000`.
+* Sin temporales residuales tras el guardado.
+* Nota: `defaults read` no ve la clave — es una cuestión de la sonda, no del
+  producto: las claves de Veyon se guardan planas con punto
+  (`VncConnection.ConnectTimeout`, no dict anidado) y `defaults` sin `-g`
+  lee el dominio de usuario.
+
+**Pendiente / opcional.**
+
+* Instalar el servicio (`sudo scripts/install-veyon-service-macos.sh`) para
+  que el Apply como admin también configure start-mode y la excepción de
+  firewall.
+* El usuario *no* admin sigue recibiendo la ventana zombie al elevarse
+  (limitación de macOS para procesos root sin sesión); la mitigación sensata
+  sería que el proceso elevado solo hiciera trabajo no-GUI o que la GUI
+  re-lanzara una copia no elevada tras elevarse.
