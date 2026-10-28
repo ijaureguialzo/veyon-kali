@@ -22,6 +22,10 @@
 #     VEYON_REPO_URL           upstream (por defecto https://github.com/veyon/veyon.git)
 #     VEYON_BRANCH             rama a mantener actualizada (por defecto, la que
 #                              sigue el checkout; si no hay ninguna, la del upstream)
+#     VEYON_VERSION            versión (tag, rama o commit) a la que fijar el
+#                              checkout; tiene prioridad sobre VEYON_BRANCH.
+#                              Puede definirse en el fichero .env de la raíz
+#                              del proyecto (no versionado; ver .env.example).
 #     VEYON_SOURCE_RESET=1     descarta los cambios locales y vuelve al upstream
 #     VEYON_SOURCE_OFFLINE=1   no accede a la red; usa el checkout tal cual
 
@@ -35,6 +39,29 @@ export PAGER=cat
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Variables locales opcionales (raíz del proyecto): la versión a compilar
+# (VEYON_VERSION), el upstream, la rama, etc.  El fichero .env no está
+# versionado (.gitignore); .env.example documenta qué puede contener.  Las
+# variables ya presentes en el entorno tienen prioridad sobre el .env.
+if [ -f "$PROJECT_DIR/.env" ]; then
+    while IFS='=' read -r _env_key _env_value; do
+        case "$_env_key" in ''|\#*) continue ;; esac
+        _env_key="${_env_key%\#*}"   # tolera comentarios a final de línea
+        _env_key="${_env_key#export }"
+        _env_key="${_env_key# }"; _env_key="${_env_key% }"
+        _env_value="${_env_value%%\#*}"
+        _env_value="${_env_value# }"; _env_value="${_env_value% }"
+        if ! [[ "$_env_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            continue
+        fi
+        # las variables ya presentes en el entorno tienen prioridad
+        if [ -z "${!_env_key:-}" ]; then
+            export "$_env_key=$_env_value"
+        fi
+    done < "$PROJECT_DIR/.env"
+    unset _env_key _env_value
+fi
 
 REPO_URL="${VEYON_REPO_URL:-https://github.com/veyon/veyon.git}"
 
@@ -64,6 +91,8 @@ Entorno:
   VEYON_SRC_DIR           ruta del checkout (alias heredado: VEYON_UPSTREAM_DIR)
   VEYON_REPO_URL          upstream (por defecto https://github.com/veyon/veyon.git)
   VEYON_BRANCH            rama a mantener actualizada
+  VEYON_VERSION           versión/tag a la que fijar el checkout (prioridad
+                          sobre VEYON_BRANCH; también desde el fichero .env)
   VEYON_SOURCE_RESET=1    descarta los cambios locales y vuelve al upstream
   VEYON_SOURCE_OFFLINE=1  no accede a la red; usa el checkout tal cual
 EOF
@@ -123,32 +152,41 @@ update_source() {
         git -C "$SRC_DIR" fetch --prune --tags origin \
             || die "no se pudo actualizar el checkout (¿sin red?)"
 
-        local target
-        target="$(remote_ref "$branch")"
-        git -C "$SRC_DIR" rev-parse --verify --quiet "$target" >/dev/null \
-            || die "la rama $target no existe en el upstream"
-
-        if [ "${VEYON_SOURCE_RESET:-0}" = "1" ]; then
-            echo "── reset a $target (se descartan los cambios locales) ──"
-            git -C "$SRC_DIR" checkout -f -B "$branch" "$target"
-            git -C "$SRC_DIR" clean -fd
+        if [ -n "${VEYON_VERSION:-}" ]; then
+            # Version fijada: el checkout va a ese ref (tag, rama o commit),
+            # en modo detached.  Tiene prioridad sobre VEYON_BRANCH.
+            git -C "$SRC_DIR" rev-parse --verify --quiet "${VEYON_VERSION}^{commit}" >/dev/null \
+                || die "VEYON_VERSION='${VEYON_VERSION}' no existe en el upstream"
+            git -C "$SRC_DIR" checkout -f -q "$VEYON_VERSION"
+            echo "── fijado a ${VEYON_VERSION} ──"
         else
-            if [ -n "$(git -C "$SRC_DIR" status --porcelain)" ]; then
-                echo "   AVISO: hay cambios locales en el checkout; se conservan"
-            fi
-            git -C "$SRC_DIR" checkout -q "$branch" 2>/dev/null \
-                || git -C "$SRC_DIR" checkout -q -B "$branch" "$target"
-            git -C "$SRC_DIR" merge --ff-only "$target" >/dev/null \
-                || die "no se puede actualizar el checkout a $target (¿cambios locales o historia divergente?); usa VEYON_SOURCE_RESET=1 o 'git -C $SRC_DIR reset --hard $target'"
-            git -C "$SRC_DIR" branch --set-upstream-to="$target" "$branch" >/dev/null 2>&1 || true
+            local target
+            target="$(remote_ref "$branch")"
+            git -C "$SRC_DIR" rev-parse --verify --quiet "$target" >/dev/null \
+                || die "la rama $target no existe en el upstream"
 
-            # El checkout puede llevar commits locales por delante del
-            # upstream: no se destruyen, pero se avisa para que quede claro
-            # que la copia no es idéntica a la del upstream.
-            local ahead
-            ahead="$(git -C "$SRC_DIR" rev-list --count "$target..$branch" 2>/dev/null || echo 0)"
-            if [ "${ahead:-0}" -gt 0 ]; then
-                echo "   AVISO: el checkout está $ahead commit(s) por delante de $target"
+            if [ "${VEYON_SOURCE_RESET:-0}" = "1" ]; then
+                echo "── reset a $target (se descartan los cambios locales) ──"
+                git -C "$SRC_DIR" checkout -f -B "$branch" "$target"
+                git -C "$SRC_DIR" clean -fd
+            else
+                if [ -n "$(git -C "$SRC_DIR" status --porcelain)" ]; then
+                    echo "   AVISO: hay cambios locales en el checkout; se conservan"
+                fi
+                git -C "$SRC_DIR" checkout -q "$branch" 2>/dev/null \
+                    || git -C "$SRC_DIR" checkout -q -B "$branch" "$target"
+                git -C "$SRC_DIR" merge --ff-only "$target" >/dev/null \
+                    || die "no se puede actualizar el checkout a $target (¿cambios locales o historia divergente?); usa VEYON_SOURCE_RESET=1 o 'git -C $SRC_DIR reset --hard $target'"
+                git -C "$SRC_DIR" branch --set-upstream-to="$target" "$branch" >/dev/null 2>&1 || true
+
+                # El checkout puede llevar commits locales por delante del
+                # upstream: no se destruyen, pero se avisa para que quede
+                # claro que la copia no es idéntica a la del upstream.
+                local ahead
+                ahead="$(git -C "$SRC_DIR" rev-list --count "$target..$branch" 2>/dev/null || echo 0)"
+                if [ "${ahead:-0}" -gt 0 ]; then
+                    echo "   AVISO: el checkout está $ahead commit(s) por delante de $target"
+                fi
             fi
         fi
     fi
@@ -158,6 +196,9 @@ update_source() {
     git -C "$SRC_DIR" submodule update --init --recursive
 
     echo "── estado ──"
+    if [ -n "${VEYON_VERSION:-}" ]; then
+        echo "    versión pedida: ${VEYON_VERSION}"
+    fi
     git --no-pager -C "$SRC_DIR" log -1 --format='    %h %ad %s' --date=short
     git --no-pager -C "$SRC_DIR" status -sb | head -1 | sed 's/^/    /'
 }

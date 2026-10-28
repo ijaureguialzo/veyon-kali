@@ -28,6 +28,10 @@
 #       deja actualizado antes de cada compilación.
 #     * La fuente se monta en modo read-only (/src:ro) para no tocar el árbol
 #       del anfitrión.
+#     * La versión del upstream a compilar se fija con VEYON_VERSION en el
+#       fichero .env de la raíz (no versionado; ver .env.example), p. ej.
+#       VEYON_VERSION=v4.11.4: scripts/veyon-source.sh lleva el checkout a
+#       ese ref antes de cada compilación (Kali y macOS).
 #     * build-veyon.sh copia la fuente a /work (escritura) y aplica ahí el
 #       parche GCC-15 de -Werror (3 falsos positivos: format-overflow /
 #       format-truncation / maybe-uninitialized), conservando -Werror para el
