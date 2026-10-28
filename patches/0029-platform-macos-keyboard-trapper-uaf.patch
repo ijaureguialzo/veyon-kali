@@ -1,0 +1,141 @@
+diff --git a/plugins/platform/macos/MacOSKeyboardShortcutTrapper.cpp b/plugins/platform/macos/MacOSKeyboardShortcutTrapper.cpp
+index f7587af43..763799283fd 100644
+--- a/plugins/platform/macos/MacOSKeyboardShortcutTrapper.cpp
++++ b/plugins/platform/macos/MacOSKeyboardShortcutTrapper.cpp
+@@ -28,13 +28,28 @@
+ #import <Carbon/Carbon.h>
+ #import <CoreGraphics/CoreGraphics.h>
+ 
++#include <set>
++
+ class MacOSKeyboardShortcutTrapper::Private
+ {
+ public:
+ 	CFMachPortRef eventTap = nullptr;
++	CFRunLoopSourceRef runLoopSource = nullptr;
+ 	CFRunLoopRef runLoop = nullptr;
+ 	bool enabled = false;
+ 
++	// The event-tap callback runs on the main run loop and receives a
++	// Private* as its userInfo.  When a trapper is destroyed there can
++	// still be tap messages queued for delivery, so a Private object must
++	// never be freed while its tap can still be invoked: destroyed
++	// trappers park their Private object here (an intentional, bounded
++	// leak, one small object per closed session window).
++	static std::set<Private*>& storage()
++	{
++		static std::set<Private*> storage;
++		return storage;
++	}
++
+ 	~Private()
+ 	{
+ 		disable();
+@@ -42,13 +57,23 @@ public:
+ 
+ 	void disable()
+ 	{
++		enabled = false;
++
++		if ( runLoopSource != nullptr )
++		{
++			// Unregister the tap from the run loop before releasing it so
++			// that no further tap callbacks can be dispatched.
++			CFRunLoopRemoveSource( runLoop, runLoopSource, kCFRunLoopCommonModes );
++			CFRelease( runLoopSource );
++			runLoopSource = nullptr;
++		}
++
+ 		if ( eventTap != nullptr )
+ 		{
+ 			CGEventTapEnable( eventTap, false );
+ 			CFRelease( eventTap );
+ 			eventTap = nullptr;
+ 		}
+-		enabled = false;
+ 	}
+ 
+ 	static CGEventRef eventTapCallback( CGEventTapProxy proxy, CGEventType type,
+@@ -56,13 +81,18 @@ public:
+ 	{
+ 		auto* self = static_cast<Private*>( userInfo );
+ 
++		if ( self == nullptr || self->enabled == false )
++		{
++			// The trapper has been disabled or destroyed in the meantime:
++			// let the event pass through without touching the tap.
++			return event;
++		}
++
+ 		if ( type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput )
+ 		{
+ 			// Re-enable the tap so that it keeps working after a timeout.
+-			if ( self->eventTap != nullptr )
+-			{
+-				CGEventTapEnable( self->eventTap, true );
+-			}
++			// The proxy passed by the system is the tap's mach port itself.
++			CGEventTapEnable( reinterpret_cast<CFMachPortRef>( proxy ), true );
+ 			return event;
+ 		}
+ 
+@@ -157,7 +187,14 @@ MacOSKeyboardShortcutTrapper::MacOSKeyboardShortcutTrapper( QObject* parent ) :
+ 
+ MacOSKeyboardShortcutTrapper::~MacOSKeyboardShortcutTrapper()
+ {
+-	delete d;
++	// Detach the Private object from this trapper and park it in the
++	// static storage instead of deleting it, so that a tap callback that
++	// is still scheduled on the run loop can never dereference freed
++	// memory (see Private::storage()).
++	d->trapper = nullptr;
++	d->disable();
++	Private::storage().insert( d );
++	d = nullptr;
+ }
+ 
+ 
+@@ -179,25 +216,28 @@ void MacOSKeyboardShortcutTrapper::setEnabled( bool on )
+ 	// to grant manually in System Settings > Privacy & Security > Accessibility.
+ 	CGEventMask eventMask = CGEventMaskBit( kCGEventKeyDown ) | CGEventMaskBit( kCGEventFlagsChanged );
+ 
+-	d->eventTap = CGEventTapCreate( kCGSessionEventTap,
+-									kCGHeadInsertEventTap,
+-									kCGEventTapOptionDefault,
+-									eventMask,
+-									&MacOSKeyboardShortcutTrapper::Private::eventTapCallback,
+-									d );
+-
+ 	if ( d->eventTap == nullptr )
+ 	{
+-		// Most likely the Accessibility permission has not been granted.
+-		qWarning( "MacOSKeyboardShortcutTrapper: unable to create event tap, "
+-				  "please grant the Accessibility permission to this application" );
+-		return;
++		d->eventTap = CGEventTapCreate( kCGSessionEventTap,
++										kCGHeadInsertEventTap,
++										kCGEventTapOptionDefault,
++										eventMask,
++										&MacOSKeyboardShortcutTrapper::Private::eventTapCallback,
++										d );
++
++		if ( d->eventTap == nullptr )
++		{
++			// Most likely the Accessibility permission has not been granted.
++			qWarning( "MacOSKeyboardShortcutTrapper: unable to create event tap, "
++					  "please grant the Accessibility permission to this application" );
++			return;
++		}
++
++		d->runLoop = CFRunLoopGetCurrent();
++		d->runLoopSource = CFMachPortCreateRunLoopSource( kCFAllocatorDefault, d->eventTap, 0 );
++		CFRunLoopAddSource( d->runLoop, d->runLoopSource, kCFRunLoopCommonModes );
+ 	}
+ 
+-	d->runLoop = CFRunLoopGetCurrent();
+-	CFRunLoopAddSource( d->runLoop,
+-						CFMachPortCreateRunLoopSource( kCFAllocatorDefault, d->eventTap, 0 ),
+-						kCFRunLoopCommonModes );
+ 	CGEventTapEnable( d->eventTap, true );
+ 
+ 	d->enabled = true;
